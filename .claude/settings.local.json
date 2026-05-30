@@ -35,7 +35,12 @@
       "Bash(git commit -q -m 'docs: add CLAUDE.md \\(architecture, data source, proxy, extension\\) *)",
       "Bash(cargo search *)",
       "Bash(scutil --proxy)",
-      "Bash(git commit -q -m 'feat: instant refresh on each turn + GUI/login proxy *)"
+      "Bash(git commit -q -m 'feat: instant refresh on each turn + GUI/login proxy *)",
+      "Bash(chmod +x scripts/install.sh scripts/uninstall.sh)",
+      "Bash(bash scripts/install.sh)",
+      "Bash(launchctl print *)",
+      "Bash(screencapture -x -R1300,0,1260,28 /tmp/aiusage_app.png)",
+      "Bash(git commit -q -m 'feat: .app bundle + launch-at-login installer *)"
     ]
   }
 }

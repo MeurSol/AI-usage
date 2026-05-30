@@ -11,15 +11,26 @@ dropdown lists each window with its reset time, and a Quit item.
 src/
   main.rs              NSApplication (accessory) bootstrap + run loop
   menubar.rs           AppKit status item + dropdown; 1s NSTimer redraws from state
-  poller.rs            background thread polls a Provider into Arc<Mutex<AppState>>
+  poller.rs            worker thread polls a Provider into Arc<Mutex<AppState>>
+  watch.rs             notify watcher on ~/.claude/projects to refresh per turn
   keychain.rs          read the Claude OAuth token from the macOS Keychain
   provider/
     mod.rs             Provider trait + normalized UsageWindow / UsageSnapshot / FetchError
     claude.rs          ClaudeProvider: keychain -> HTTP GET -> parse
+packaging/Info.plist   .app bundle metadata (LSUIElement agent app)
+scripts/install.sh     build + bundle + register login LaunchAgent
+scripts/uninstall.sh   remove agent + .app
 ```
 
 Threading: the worker thread does all I/O and writes `AppState`; the main
 thread only reads it (AppKit must be touched on the main thread only).
+
+### Refresh timing
+
+The worker fetches at startup, then waits on a channel that is signaled either
+by the periodic interval (60s fallback) or by `watch.rs`. The watcher fires
+when Claude Code appends to a `*.jsonl` under `~/.claude/projects` — i.e. right
+after a conversation turn — so usage updates ~immediately (800ms debounce).
 
 ## Data source
 
@@ -42,16 +53,30 @@ cargo test           # parse unit test
 cargo build --release
 ```
 
-Requires Rust ≥ 1.85 (deps use edition 2024). First run triggers a one-time
+Requires Rust ≥ 1.85 (deps use edition 2024). First run may trigger a one-time
 **Keychain access prompt** — choose "Always Allow" to silence future reads.
+
+### Install / launch at login
+
+```sh
+scripts/install.sh     # build, install ~/Applications/AI-usage.app, register LaunchAgent
+scripts/uninstall.sh   # remove it
+```
+
+`install.sh` assembles the `.app` (using `packaging/Info.plist`) and writes a
+LaunchAgent at `~/Library/LaunchAgents/com.machine.ai-usage.plist` with
+`RunAtLoad` so it starts at login, then loads it via
+`launchctl bootstrap`/`kickstart`. Re-run to update. The script bakes the
+resolved proxy (below) into the agent's `EnvironmentVariables` so it works in
+the login context. Quit (from the menu) stays quit until next login.
 
 ### Proxy
 
 `api.anthropic.com` returns **403 on direct access in some regions**; it must
-be reached through an HTTP proxy. The app uses the first `http://` proxy from
-`HTTPS_PROXY` / `HTTP_PROXY` (it ignores `ALL_PROXY`, which is often socks5).
-Launch from a shell where these are set (e.g. `http://127.0.0.1:7890`).
-Note: a GUI `.app` launched from Finder won't inherit shell env — see Follow-ups.
+be reached through an HTTP proxy. Resolution order (`provider/claude.rs`):
+1. `HTTPS_PROXY` / `HTTP_PROXY` (http scheme; `ALL_PROXY`/socks5 ignored).
+2. macOS system proxy via `scutil --proxy` — so a Finder/login-launched `.app`
+   works even without shell env.
 
 ## Extending (new providers)
 
@@ -74,8 +99,9 @@ The UI and poller are provider-agnostic and need no changes.
 
 ## Follow-ups (not yet built)
 
-- `.app` bundle + launch-at-login (and proxy config for GUI launch context).
 - OAuth token auto-refresh on expiry (currently shows `auth?` → re-login in
   Claude Code).
 - Opus/Sonnet weekly breakdown + `extra_usage` display.
 - API usage / Codex providers.
+- Code-sign the bundle (unsigned binaries may re-prompt for Keychain access
+  after each rebuild).
