@@ -2,6 +2,7 @@ mod keychain;
 mod menubar;
 mod poller;
 mod provider;
+mod watch;
 
 use std::time::Duration;
 

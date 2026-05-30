@@ -1,6 +1,7 @@
 //! Background polling: a worker thread refreshes `AppState` on an interval.
 //! The UI (main thread) only ever reads the shared state.
 
+use std::sync::mpsc::{self, RecvTimeoutError};
 use std::sync::{Arc, Mutex};
 use std::thread;
 use std::time::Duration;
@@ -8,6 +9,10 @@ use std::time::Duration;
 use chrono::{DateTime, Local};
 
 use crate::provider::{FetchError, Provider, UsageSnapshot};
+use crate::watch;
+
+/// Coalesce the burst of log writes within a single turn before fetching.
+const DEBOUNCE: Duration = Duration::from_millis(800);
 
 #[derive(Clone, Copy, PartialEq, Eq)]
 pub enum Status {
@@ -33,8 +38,9 @@ pub struct AppState {
 
 pub type Shared = Arc<Mutex<AppState>>;
 
-/// Spawn the polling thread and return the shared state. The first fetch runs
-/// immediately, then repeats every `interval`.
+/// Spawn the polling thread and return the shared state. Fetches immediately at
+/// startup, then on every conversation turn (via the log watcher) and at least
+/// every `interval` as a fallback.
 pub fn spawn<P: Provider + Send + 'static>(provider: P, interval: Duration) -> Shared {
     let shared: Shared = Arc::new(Mutex::new(AppState {
         snapshot: None,
@@ -43,13 +49,28 @@ pub fn spawn<P: Provider + Send + 'static>(provider: P, interval: Duration) -> S
         updated_at: None,
     }));
 
+    let (tx, rx) = mpsc::channel::<()>();
+    let watcher = watch::spawn(tx);
+
     let worker = Arc::clone(&shared);
-    thread::spawn(move || loop {
-        let result = provider.fetch();
-        if let Ok(mut state) = worker.lock() {
-            apply(&mut state, result);
+    thread::spawn(move || {
+        let _watcher = watcher; // keep the FS watcher alive for the thread's life
+        loop {
+            let result = provider.fetch();
+            if let Ok(mut state) = worker.lock() {
+                apply(&mut state, result);
+            }
+            // Wait for the next trigger: a turn event, or the periodic timeout.
+            match rx.recv_timeout(interval) {
+                Ok(()) => {
+                    thread::sleep(DEBOUNCE);
+                    while rx.try_recv().is_ok() {} // drain the rest of the burst
+                }
+                Err(RecvTimeoutError::Timeout) => {}
+                // No watcher: fall back to plain periodic polling.
+                Err(RecvTimeoutError::Disconnected) => thread::sleep(interval),
+            }
         }
-        thread::sleep(interval);
     });
 
     shared

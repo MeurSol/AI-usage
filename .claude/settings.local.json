@@ -32,7 +32,10 @@
       "Bash(git commit -q -m 'feat: menu bar UI \\(AppKit status item + dropdown\\) *)",
       "Bash(grep -vE \"Compiling|^\\\\s*$\")",
       "Bash(awk '{print \"binary:\", $5, $9}')",
-      "Bash(git commit -q -m 'docs: add CLAUDE.md \\(architecture, data source, proxy, extension\\) *)"
+      "Bash(git commit -q -m 'docs: add CLAUDE.md \\(architecture, data source, proxy, extension\\) *)",
+      "Bash(cargo search *)",
+      "Bash(scutil --proxy)",
+      "Bash(git commit -q -m 'feat: instant refresh on each turn + GUI/login proxy *)"
     ]
   }
 }

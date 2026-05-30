@@ -25,10 +25,26 @@ struct OauthCreds {
 /// Return the current Claude Code OAuth access token, freshly read each call
 /// (Claude Code refreshes it in place while in use).
 pub fn claude_access_token() -> Result<String> {
-    let account = std::env::var("USER").context("no USER env var for keychain account")?;
+    let account = account_name().context("cannot determine macOS account name")?;
     let blob = security_framework::passwords::get_generic_password(SERVICE, &account)
         .context("read 'Claude Code-credentials' from Keychain")?;
     let creds: Creds =
         serde_json::from_slice(&blob).context("parse keychain credential JSON")?;
     Ok(creds.claude_ai_oauth.access_token)
+}
+
+/// The login short name, used as the Keychain account. Env vars are unset in
+/// some launchd contexts, so fall back to the `$HOME` directory name.
+fn account_name() -> Option<String> {
+    for key in ["USER", "LOGNAME"] {
+        if let Ok(v) = std::env::var(key) {
+            if !v.is_empty() {
+                return Some(v);
+            }
+        }
+    }
+    let home = std::env::var_os("HOME")?;
+    std::path::Path::new(&home)
+        .file_name()
+        .map(|n| n.to_string_lossy().into_owned())
 }

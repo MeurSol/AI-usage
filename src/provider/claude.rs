@@ -23,13 +23,50 @@ struct RawUsage {
     seven_day: RawWindow,
 }
 
-/// First usable `http://` proxy from the standard env vars, if any.
-fn env_http_proxy() -> Option<ureq::Proxy> {
+/// Resolve an `http://` proxy: standard env vars first, then the macOS system
+/// proxy (so a `.app` launched from Finder/login — without shell env — still
+/// works). `ALL_PROXY` (often socks5) is intentionally ignored.
+fn http_proxy() -> Option<ureq::Proxy> {
+    let url = env_proxy_url().or_else(system_proxy_url)?;
+    ureq::Proxy::new(&url).ok()
+}
+
+fn env_proxy_url() -> Option<String> {
     ["HTTPS_PROXY", "https_proxy", "HTTP_PROXY", "http_proxy"]
         .iter()
         .filter_map(|k| std::env::var(k).ok())
         .find(|v| !v.is_empty())
-        .and_then(|url| ureq::Proxy::new(&url).ok())
+}
+
+/// Read the macOS system proxy via `scutil --proxy`. Prefers the HTTPS proxy
+/// settings, falling back to HTTP. The proxy itself is always addressed over
+/// http:// (it tunnels HTTPS via CONNECT).
+fn system_proxy_url() -> Option<String> {
+    let out = std::process::Command::new("scutil")
+        .arg("--proxy")
+        .output()
+        .ok()?;
+    let text = String::from_utf8_lossy(&out.stdout);
+    let value = |key: &str| {
+        text.lines().find_map(|line| {
+            line.trim()
+                .strip_prefix(key)?
+                .trim_start()
+                .strip_prefix(':')
+                .map(|v| v.trim().to_string())
+        })
+    };
+    for (enable, host, port) in [
+        ("HTTPSEnable", "HTTPSProxy", "HTTPSPort"),
+        ("HTTPEnable", "HTTPProxy", "HTTPPort"),
+    ] {
+        if value(enable).as_deref() == Some("1") {
+            if let (Some(h), Some(p)) = (value(host), value(port)) {
+                return Some(format!("http://{h}:{p}"));
+            }
+        }
+    }
+    None
 }
 
 pub struct ClaudeProvider {
@@ -42,7 +79,7 @@ impl ClaudeProvider {
         // the HTTP-scheme proxy from the environment; we intentionally ignore
         // ALL_PROXY (often socks5, which ureq can't use without a feature).
         let config = ureq::Agent::config_builder()
-            .proxy(env_http_proxy())
+            .proxy(http_proxy())
             .build();
         ClaudeProvider {
             agent: ureq::Agent::new_with_config(config),
