@@ -19,6 +19,6 @@ fn main() {
                 );
             }
         }
-        Err(e) => eprintln!("fetch failed: {e}"),
+        Err(e) => eprintln!("fetch failed: {e:?}"),
     }
 }

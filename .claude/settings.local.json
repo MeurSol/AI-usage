@@ -9,7 +9,12 @@
       "Bash(rustup update *)",
       "Bash(rustc --version)",
       "Bash(git add *)",
-      "Bash(git commit -q -m 'feat: scaffold + claude usage parse layer *)"
+      "Bash(git commit -q -m 'feat: scaffold + claude usage parse layer *)",
+      "Bash(cargo run *)",
+      "Bash(security find-generic-password *)",
+      "Bash(env)",
+      "Bash(grep -vE \"warning|note|-->|\\\\||\\\\^|=|Compiling|Finished|Running|^$\")",
+      "Bash(git commit -q -m 'feat: live fetch via http proxy *)"
     ]
   }
 }

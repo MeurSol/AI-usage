@@ -23,11 +23,30 @@ struct RawUsage {
     seven_day: RawWindow,
 }
 
-pub struct ClaudeProvider;
+/// First usable `http://` proxy from the standard env vars, if any.
+fn env_http_proxy() -> Option<ureq::Proxy> {
+    ["HTTPS_PROXY", "https_proxy", "HTTP_PROXY", "http_proxy"]
+        .iter()
+        .filter_map(|k| std::env::var(k).ok())
+        .find(|v| !v.is_empty())
+        .and_then(|url| ureq::Proxy::new(&url).ok())
+}
+
+pub struct ClaudeProvider {
+    agent: ureq::Agent,
+}
 
 impl ClaudeProvider {
     pub fn new() -> Self {
-        ClaudeProvider
+        // api.anthropic.com is reached via an HTTP proxy in some regions. Use
+        // the HTTP-scheme proxy from the environment; we intentionally ignore
+        // ALL_PROXY (often socks5, which ureq can't use without a feature).
+        let config = ureq::Agent::config_builder()
+            .proxy(env_http_proxy())
+            .build();
+        ClaudeProvider {
+            agent: ureq::Agent::new_with_config(config),
+        }
     }
 
     /// Parse the `/api/oauth/usage` JSON body into a normalized snapshot.
@@ -57,7 +76,9 @@ impl Provider for ClaudeProvider {
 
     fn fetch(&self) -> Result<UsageSnapshot, FetchError> {
         let token = keychain::claude_access_token().map_err(FetchError::Other)?;
-        match ureq::get(USAGE_URL)
+        match self
+            .agent
+            .get(USAGE_URL)
             .header("Authorization", &format!("Bearer {token}"))
             .header("anthropic-beta", OAUTH_BETA)
             .call()
