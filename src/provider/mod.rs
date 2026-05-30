@@ -53,6 +53,5 @@ impl From<anyhow::Error> for FetchError {
 }
 
 pub trait Provider {
-    fn name(&self) -> &str;
     fn fetch(&self) -> Result<UsageSnapshot, FetchError>;
 }

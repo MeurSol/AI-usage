@@ -14,7 +14,9 @@
       "Bash(security find-generic-password *)",
       "Bash(env)",
       "Bash(grep -vE \"warning|note|-->|\\\\||\\\\^|=|Compiling|Finished|Running|^$\")",
-      "Bash(git commit -q -m 'feat: live fetch via http proxy *)"
+      "Bash(git commit -q -m 'feat: live fetch via http proxy *)",
+      "Bash(git commit -q -m 'feat: background poller with shared AppState *)",
+      "Read(//Users/machine/.cargo/registry/src/**)"
     ]
   }
 }

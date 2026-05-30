@@ -70,10 +70,6 @@ impl ClaudeProvider {
 }
 
 impl Provider for ClaudeProvider {
-    fn name(&self) -> &str {
-        "claude"
-    }
-
     fn fetch(&self) -> Result<UsageSnapshot, FetchError> {
         let token = keychain::claude_access_token().map_err(FetchError::Other)?;
         match self
