@@ -29,7 +29,10 @@
       "Bash(screencapture -x -R1300,0,700,420 /tmp/aiusage_menu.png)",
       "Bash(pkill -f target/debug/ai-usage)",
       "Bash(echo \"killed: $?\")",
-      "Bash(git commit -q -m 'feat: menu bar UI \\(AppKit status item + dropdown\\) *)"
+      "Bash(git commit -q -m 'feat: menu bar UI \\(AppKit status item + dropdown\\) *)",
+      "Bash(grep -vE \"Compiling|^\\\\s*$\")",
+      "Bash(awk '{print \"binary:\", $5, $9}')",
+      "Bash(git commit -q -m 'docs: add CLAUDE.md \\(architecture, data source, proxy, extension\\) *)"
     ]
   }
 }
