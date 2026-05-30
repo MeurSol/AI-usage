@@ -16,7 +16,20 @@
       "Bash(grep -vE \"warning|note|-->|\\\\||\\\\^|=|Compiling|Finished|Running|^$\")",
       "Bash(git commit -q -m 'feat: live fetch via http proxy *)",
       "Bash(git commit -q -m 'feat: background poller with shared AppState *)",
-      "Read(//Users/machine/.cargo/registry/src/**)"
+      "Read(//Users/machine/.cargo/registry/src/**)",
+      "Bash(cargo build *)",
+      "Bash(./target/debug/ai-usage *)",
+      "Bash(system_profiler SPDisplaysDataType)",
+      "Bash(screencapture -x -T 14 -R0,0,3000,40 /tmp/aiusage_bar.png)",
+      "Read(//tmp/**)",
+      "Bash(screencapture -x /tmp/aiusage_full.png)",
+      "Bash(osascript *)",
+      "Bash(screencapture -x -R1760,0,800,28 /tmp/aiusage_bar.png)",
+      "Bash(screencapture -x -R1300,0,1260,28 /tmp/aiusage_bar2.png)",
+      "Bash(screencapture -x -R1300,0,700,420 /tmp/aiusage_menu.png)",
+      "Bash(pkill -f target/debug/ai-usage)",
+      "Bash(echo \"killed: $?\")",
+      "Bash(git commit -q -m 'feat: menu bar UI \\(AppKit status item + dropdown\\) *)"
     ]
   }
 }
