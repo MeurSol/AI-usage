@@ -1,0 +1,40 @@
+[package]
+name = "ai-usage"
+version = "0.1.0"
+edition = "2021"
+description = "macOS menu bar monitor for Claude usage (session + weekly limits)"
+
+[dependencies]
+anyhow = "1"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+chrono = { version = "0.4", default-features = false, features = ["std", "clock", "serde"] }
+ureq = { version = "3", features = ["json"] }
+security-framework = "3"
+
+objc2 = "0.6"
+objc2-foundation = { version = "0.3", features = [
+    "NSString",
+    "NSDate",
+    "NSTimer",
+    "NSRunLoop",
+    "NSThread",
+] }
+objc2-app-kit = { version = "0.3", features = [
+    "NSApplication",
+    "NSResponder",
+    "NSStatusBar",
+    "NSStatusBarButton",
+    "NSStatusItem",
+    "NSButton",
+    "NSControl",
+    "NSView",
+    "NSMenu",
+    "NSMenuItem",
+] }
+
+[profile.release]
+opt-level = "z"
+lto = true
+strip = true
+panic = "abort"

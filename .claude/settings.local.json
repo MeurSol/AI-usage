@@ -1,0 +1,15 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(cargo init *)",
+      "Bash(git checkout *)",
+      "Bash(cargo test *)",
+      "Bash(rustup --version)",
+      "Bash(rustup show *)",
+      "Bash(rustup update *)",
+      "Bash(rustc --version)",
+      "Bash(git add *)",
+      "Bash(git commit -q -m 'feat: scaffold + claude usage parse layer *)"
+    ]
+  }
+}
