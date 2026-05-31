@@ -1,13 +1,39 @@
-// Renders the AI-usage app icon: a colored ring gauge at ~40% on a dark
-// rounded-square, into a .iconset directory. Run via scripts/make-icon.sh.
+// Renders the AI-usage app icon: an Apple "activity ring" style gauge — a dark
+// squircle with a green→teal gradient ring (~72%) — into a .iconset directory.
+// Run via scripts/make-icon.sh.
 import AppKit
 
-let FRACTION: CGFloat = 0.40
+let FRACTION: CGFloat = 0.72
 
-func levelColor(_ f: CGFloat) -> NSColor {
-    let c = min(max(f, 0), 1)
-    let hue = (1 - c) * 0.33 // 0.33 ≈ green, 0.0 = red
-    return NSColor(hue: hue, saturation: 0.85, brightness: 0.95, alpha: 1)
+func rgb(_ r: CGFloat, _ g: CGFloat, _ b: CGFloat, _ a: CGFloat = 1) -> NSColor {
+    NSColor(srgbRed: r / 255, green: g / 255, blue: b / 255, alpha: a)
+}
+func lerp(_ c0: NSColor, _ c1: NSColor, _ t: CGFloat) -> NSColor {
+    let a = c0.usingColorSpace(.sRGB)!, b = c1.usingColorSpace(.sRGB)!
+    return NSColor(
+        srgbRed: a.redComponent + (b.redComponent - a.redComponent) * t,
+        green: a.greenComponent + (b.greenComponent - a.greenComponent) * t,
+        blue: a.blueComponent + (b.blueComponent - a.blueComponent) * t, alpha: 1)
+}
+// macOS-style squircle (continuous rounded corners approximated).
+func squircle(_ rect: NSRect) -> NSBezierPath {
+    NSBezierPath(roundedRect: rect, xRadius: rect.width * 0.2237, yRadius: rect.height * 0.2237)
+}
+// Gradient ring with rounded ends, clockwise from 12 o'clock, sweep = frac.
+func gradientRing(center: NSPoint, radius: CGFloat, lineWidth: CGFloat,
+                  frac: CGFloat, c0: NSColor, c1: NSColor) {
+    let steps = 160
+    let sweep = 360 * frac
+    for i in 0..<steps {
+        let t0 = CGFloat(i) / CGFloat(steps), t1 = CGFloat(i + 1) / CGFloat(steps)
+        let seg = NSBezierPath()
+        seg.appendArc(withCenter: center, radius: radius,
+                      startAngle: 90 - sweep * t0, endAngle: 90 - sweep * t1, clockwise: true)
+        seg.lineWidth = lineWidth
+        seg.lineCapStyle = .round
+        lerp(c0, c1, t0).setStroke()
+        seg.stroke()
+    }
 }
 
 func renderPNG(_ size: Int) -> Data {
@@ -19,44 +45,25 @@ func renderPNG(_ size: Int) -> Data {
     NSGraphicsContext.saveGraphicsState()
     NSGraphicsContext.current = NSGraphicsContext(bitmapImageRep: rep)
 
-    // Dark rounded-square background.
-    let pad = n * 0.055
-    let bgRect = NSRect(x: pad, y: pad, width: n - 2 * pad, height: n - 2 * pad)
-    let bg = NSBezierPath(roundedRect: bgRect, xRadius: n * 0.225, yRadius: n * 0.225)
-    NSColor(calibratedRed: 0.137, green: 0.149, blue: 0.176, alpha: 1).setFill()
-    bg.fill()
-
-    // Ring gauge.
+    let pad = n * 0.085
+    let tile = NSRect(x: pad, y: pad, width: n - 2 * pad, height: n - 2 * pad)
     let center = NSPoint(x: n / 2, y: n / 2)
-    let lw = n * 0.12
-    let radius = (n - 2 * pad) / 2 - lw * 0.95
 
+    // Dark squircle background with a subtle top→bottom gradient.
+    let sq = squircle(tile)
+    sq.addClip()
+    NSGradient(colors: [rgb(38, 38, 42), rgb(8, 8, 10)])!.draw(in: sq, angle: -90)
+
+    // Faint full-circle track (the "remaining" hint) + green→teal progress ring.
+    let r = tile.width * 0.30
+    let lw = tile.width * 0.135
     let track = NSBezierPath()
-    track.appendArc(withCenter: center, radius: radius, startAngle: 0, endAngle: 360)
+    track.appendArc(withCenter: center, radius: r, startAngle: 0, endAngle: 360)
     track.lineWidth = lw
-    NSColor(calibratedWhite: 0.30, alpha: 1).setStroke()
+    rgb(48, 209, 88, 0.16).setStroke()
     track.stroke()
-
-    let prog = NSBezierPath()
-    prog.appendArc(withCenter: center, radius: radius,
-                   startAngle: 90, endAngle: 90 - 360 * FRACTION, clockwise: true)
-    prog.lineWidth = lw
-    prog.lineCapStyle = .round
-    levelColor(FRACTION).setStroke()
-    prog.stroke()
-
-    // "40%" label for the larger sizes (unreadable below ~128px).
-    if size >= 128 {
-        let label = "\(Int(FRACTION * 100))%"
-        let fontSize = n * 0.26
-        let attrs: [NSAttributedString.Key: Any] = [
-            .font: NSFont.systemFont(ofSize: fontSize, weight: .semibold),
-            .foregroundColor: NSColor.white,
-        ]
-        let str = NSAttributedString(string: label, attributes: attrs)
-        let sz = str.size()
-        str.draw(at: NSPoint(x: center.x - sz.width / 2, y: center.y - sz.height / 2))
-    }
+    gradientRing(center: center, radius: r, lineWidth: lw, frac: FRACTION,
+                 c0: rgb(48, 209, 88), c1: rgb(48, 205, 209))
 
     NSGraphicsContext.restoreGraphicsState()
     return rep.representation(using: .png, properties: [:])!
@@ -67,7 +74,6 @@ guard CommandLine.arguments.count > 1 else {
     exit(1)
 }
 let outDir = CommandLine.arguments[1]
-// (pixel size, filename) entries an .iconset needs.
 let entries: [(Int, String)] = [
     (16, "icon_16x16.png"), (32, "icon_16x16@2x.png"),
     (32, "icon_32x32.png"), (64, "icon_32x32@2x.png"),
@@ -76,7 +82,6 @@ let entries: [(Int, String)] = [
     (512, "icon_512x512.png"), (1024, "icon_512x512@2x.png"),
 ]
 for (px, name) in entries {
-    let data = renderPNG(px)
-    try! data.write(to: URL(fileURLWithPath: "\(outDir)/\(name)"))
+    try! renderPNG(px).write(to: URL(fileURLWithPath: "\(outDir)/\(name)"))
 }
 print("wrote \(entries.count) icon images to \(outDir)")

@@ -89,7 +89,13 @@
       "Bash(screencapture -x -R1300,0,1260,28 /tmp/menubar_red.png)",
       "Bash(swift /tmp/checkicon.swift)",
       "Bash(git commit -q -m 'feat: colored gauge + app icon + install to /Applications *)",
-      "Bash(rm -f /tmp/menubar_*.png /tmp/icon_preview.png /tmp/resolved_icon.png /tmp/checkicon.swift /tmp/install*.log)"
+      "Bash(rm -f /tmp/menubar_*.png /tmp/icon_preview.png /tmp/resolved_icon.png /tmp/checkicon.swift /tmp/install*.log)",
+      "Bash(sed -i '' 's#/tmp/icon_A.png#icon-previews/A_activity-ring.png#; s#/tmp/icon_B.png#icon-previews/B_vibrant-tile.png#; s#/tmp/icon_C.png#icon-previews/C_graphite-minimal.png#' /tmp/icon_preview.swift)",
+      "Bash(swift /tmp/icon_preview.swift)",
+      "Bash(sips -s format png packaging/AppIcon.icns --out /tmp/iconA_check.png)",
+      "Bash(pkill -f \"AI-usage.app\")",
+      "Bash(swift /tmp/checkiconA.swift)",
+      "Bash(git commit -q -m 'feat: refine app icon to Apple activity-ring style *)"
     ]
   }
 }
