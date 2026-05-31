@@ -57,6 +57,8 @@ pub struct AppState {
     /// Human-readable detail for the error/stale case.
     pub message: Option<String>,
     pub updated_at: Option<DateTime<Local>>,
+    /// Bumped on every state update so the UI can skip redundant redraws.
+    pub version: u64,
 }
 
 pub type Shared = Arc<Mutex<AppState>>;
@@ -69,6 +71,7 @@ pub fn spawn<P: Provider + Send + 'static>(provider: P) -> (Shared, Trigger) {
         status: Status::Loading,
         message: None,
         updated_at: None,
+        version: 0,
     }));
 
     let (tx, rx) = mpsc::channel::<()>();
@@ -144,6 +147,7 @@ mod tests {
             status: Status::Ok,
             message: None,
             updated_at: None,
+            version: 0,
         }
     }
 
@@ -154,6 +158,7 @@ mod tests {
             status: Status::Loading,
             message: None,
             updated_at: None,
+            version: 0,
         };
         assert_eq!(next_wait(&state), HEARTBEAT);
     }
@@ -183,6 +188,7 @@ mod tests {
 
 /// Fold one fetch result into the state, preserving the last good snapshot.
 fn apply(state: &mut AppState, result: Result<UsageSnapshot, FetchError>) {
+    state.version = state.version.wrapping_add(1);
     match result {
         Ok(snapshot) => {
             state.snapshot = Some(snapshot);

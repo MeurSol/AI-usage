@@ -103,7 +103,8 @@
       "Bash(git config *)",
       "Bash(echo \"git user.name: $\\(git config user.name 2>/dev/null || echo '\\(unset\\)'\\)\")",
       "Bash(echo \"git user.email: $\\(git config user.email 2>/dev/null || echo '\\(unset\\)'\\)\")",
-      "Bash(git commit -q -m 'docs: add README and MIT LICENSE *)"
+      "Bash(git commit -q -m 'docs: add README and MIT LICENSE *)",
+      "Bash(git commit -q -m 'perf: redraw the menu bar only when state changes *)"
     ]
   }
 }

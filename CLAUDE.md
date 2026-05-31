@@ -35,6 +35,9 @@ visible on light and dark menu bars. The same ramp at 40% drives the app icon.
 
 Threading: the worker thread does all I/O and writes `AppState`; the main
 thread only reads it (AppKit must be touched on the main thread only).
+`AppState.version` is bumped on every state update; the 1s UI timer skips the
+redraw (rebuilding the gauge image + menu) when the version is unchanged, so
+idle ticks are cheap.
 
 ### Refresh timing (`poller.rs`)
 

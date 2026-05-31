@@ -1,6 +1,9 @@
 //! macOS status bar item + dropdown menu, driven by the shared `AppState`.
-//! A 1-second NSTimer ticks the controller, which re-reads the state and
-//! redraws the title and menu. All AppKit access stays on the main thread.
+//! A 1-second NSTimer ticks the controller; it redraws the title and menu only
+//! when the state's `version` has changed since the last redraw, so idle ticks
+//! are cheap. All AppKit access stays on the main thread.
+
+use std::cell::Cell;
 
 use chrono::{DateTime, Local};
 use objc2::rc::Retained;
@@ -13,12 +16,14 @@ use objc2_app_kit::{
 use objc2_foundation::{NSString, NSTimer};
 
 use crate::gauge;
-use crate::poller::{Shared, Status, Trigger};
+use crate::poller::{AppState, Shared, Status, Trigger};
 
 pub struct Ivars {
     shared: Shared,
     trigger: Trigger,
     item: Retained<NSStatusItem>,
+    /// Last `AppState.version` rendered; skip redraw when unchanged.
+    last_version: Cell<Option<u64>>,
 }
 
 define_class!(
@@ -49,7 +54,15 @@ define_class!(
 impl Controller {
     fn refresh(&self) {
         let mtm = MainThreadMarker::from(self);
-        let (session_frac, title, lines) = render(&self.ivars().shared);
+        // Skip the redraw entirely when nothing has changed since last time.
+        let (session_frac, title, lines) = {
+            let state = self.ivars().shared.lock().expect("state lock");
+            if self.ivars().last_version.get() == Some(state.version) {
+                return;
+            }
+            self.ivars().last_version.set(Some(state.version));
+            render(&state)
+        };
 
         if let Some(button) = self.ivars().item.button(mtm) {
             match session_frac {
@@ -96,9 +109,12 @@ pub fn install(mtm: MainThreadMarker, shared: Shared, trigger: Trigger) -> Retai
     }
 
     let controller = {
-        let this = mtm
-            .alloc::<Controller>()
-            .set_ivars(Ivars { shared, trigger, item });
+        let this = mtm.alloc::<Controller>().set_ivars(Ivars {
+            shared,
+            trigger,
+            item,
+            last_version: Cell::new(None),
+        });
         let this: Retained<Controller> = unsafe { msg_send![super(this), init] };
         this
     };
@@ -118,8 +134,7 @@ pub fn install(mtm: MainThreadMarker, shared: Shared, trigger: Trigger) -> Retai
 
 /// Produce the session gauge fraction (session %, `None` when no data), the bar
 /// title, and the dropdown lines for the current state.
-fn render(shared: &Shared) -> (Option<f64>, String, Vec<String>) {
-    let state = shared.lock().expect("state lock");
+fn render(state: &AppState) -> (Option<f64>, String, Vec<String>) {
     match &state.snapshot {
         Some(snap) => {
             let pcts: Vec<String> = snap
