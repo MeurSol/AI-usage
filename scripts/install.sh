@@ -1,23 +1,32 @@
 #!/usr/bin/env bash
-# Build AI-usage, install it as ~/Applications/AI-usage.app, and register a
-# LaunchAgent so it starts at login. Re-run to update an existing install.
+# Build AI-usage, install it to /Applications (so it shows in Finder/Launchpad),
+# and register a LaunchAgent so it starts at login. Re-run to update.
 set -euo pipefail
 
 BUNDLE_ID="com.machine.ai-usage"
 APP_NAME="AI-usage"
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
-APP_DIR="$HOME/Applications/$APP_NAME.app"
 PLIST="$HOME/Library/LaunchAgents/$BUNDLE_ID.plist"
 uid="$(id -u)"
+
+# Prefer /Applications (where users look); fall back to ~/Applications if it
+# isn't writable (no sudo).
+if [ -w /Applications ]; then
+    APP_DIR="/Applications/$APP_NAME.app"
+else
+    APP_DIR="$HOME/Applications/$APP_NAME.app"
+    mkdir -p "$HOME/Applications"
+fi
 
 echo "==> Building release binary"
 ( cd "$ROOT" && cargo build --release )
 
 echo "==> Assembling $APP_DIR"
 rm -rf "$APP_DIR"
-mkdir -p "$APP_DIR/Contents/MacOS"
+mkdir -p "$APP_DIR/Contents/MacOS" "$APP_DIR/Contents/Resources"
 cp "$ROOT/target/release/ai-usage" "$APP_DIR/Contents/MacOS/ai-usage"
 cp "$ROOT/packaging/Info.plist" "$APP_DIR/Contents/Info.plist"
+cp "$ROOT/packaging/AppIcon.icns" "$APP_DIR/Contents/Resources/AppIcon.icns"
 BIN="$APP_DIR/Contents/MacOS/ai-usage"
 
 echo "==> Code-signing"
@@ -36,6 +45,12 @@ else
     echo "    ad-hoc signed (run scripts/setup-signing.sh for a stable identity)"
 fi
 codesign --verify --deep --strict "$APP_DIR" && echo "    signature verified"
+
+echo "==> Registering with LaunchServices (Finder/Spotlight/Launchpad)"
+LSREGISTER=/System/Library/Frameworks/CoreServices.framework/Frameworks/LaunchServices.framework/Support/lsregister
+"$LSREGISTER" -f "$APP_DIR" 2>/dev/null || true
+# Refresh the icon cache so the new icon shows immediately.
+touch "$APP_DIR"
 
 # Resolve a proxy for the login context (GUI launch has no shell env). Prefer
 # the current shell's proxy, else the macOS system proxy. The app also falls
@@ -83,6 +98,7 @@ launchctl bootout "gui/$uid/$BUNDLE_ID" 2>/dev/null || true
 launchctl bootstrap "gui/$uid" "$PLIST"
 launchctl kickstart -k "gui/$uid/$BUNDLE_ID"
 
-echo "Done. '$APP_NAME' is running and will start at login."
+echo "Done. '$APP_NAME' is installed at $APP_DIR, running, and starts at login."
+echo "Find it in Finder → Applications (or Launchpad / Spotlight)."
 echo "First launch may prompt for Keychain access — choose 'Always Allow'."
 echo "Logs: /tmp/$BUNDLE_ID.log"

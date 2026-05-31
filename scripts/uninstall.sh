@@ -3,12 +3,12 @@
 set -euo pipefail
 
 BUNDLE_ID="com.machine.ai-usage"
-APP_DIR="$HOME/Applications/AI-usage.app"
 PLIST="$HOME/Library/LaunchAgents/$BUNDLE_ID.plist"
 uid="$(id -u)"
 
 launchctl bootout "gui/$uid/$BUNDLE_ID" 2>/dev/null || true
-pkill -f "$APP_DIR/Contents/MacOS/ai-usage" 2>/dev/null || true
+pkill -f "AI-usage.app/Contents/MacOS/ai-usage" 2>/dev/null || true
 rm -f "$PLIST"
-rm -rf "$APP_DIR"
+# Remove from both possible install locations.
+rm -rf "/Applications/AI-usage.app" "$HOME/Applications/AI-usage.app"
 echo "Uninstalled AI-usage."

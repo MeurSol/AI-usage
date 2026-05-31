@@ -75,7 +75,21 @@
       "Bash(screencapture -x -R1290,0,260,28 /tmp/gauge_confirm.png)",
       "Bash(codesign -dv __TRACKED_VAR__/Applications/AI-usage.app)",
       "Bash(git commit -q -m 'feat: session % pie gauge in the menu bar *)",
-      "Bash(rm -f /tmp/gauge*.png /tmp/install*.log /tmp/signsetup*.log /tmp/u.json)"
+      "Bash(rm -f /tmp/gauge*.png /tmp/install*.log /tmp/signsetup*.log /tmp/u.json)",
+      "Bash(chmod +x scripts/make-icon.sh)",
+      "Bash(bash scripts/make-icon.sh)",
+      "Bash(chmod +x scripts/uninstall.sh)",
+      "Bash(bash scripts/uninstall.sh)",
+      "Bash(echo \"install pid $!\")",
+      "Read(//Applications/**)",
+      "Read(//Applications/AI-usage.app/Contents/**)",
+      "Bash(screencapture -x -R1290,0,280,28 /tmp/menubar_color.png)",
+      "Bash(screencapture -x -R1300,0,1260,28 /tmp/menubar_green.png)",
+      "Bash(AIUSAGE_FAKE=92 ./target/debug/ai-usage)",
+      "Bash(screencapture -x -R1300,0,1260,28 /tmp/menubar_red.png)",
+      "Bash(swift /tmp/checkicon.swift)",
+      "Bash(git commit -q -m 'feat: colored gauge + app icon + install to /Applications *)",
+      "Bash(rm -f /tmp/menubar_*.png /tmp/icon_preview.png /tmp/resolved_icon.png /tmp/checkicon.swift /tmp/install*.log)"
     ]
   }
 }

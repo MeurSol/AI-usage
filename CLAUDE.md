@@ -11,7 +11,7 @@ dropdown lists each window with its reset time, and a Quit item.
 src/
   main.rs              NSApplication (accessory) bootstrap + run loop
   menubar.rs           AppKit status item + dropdown; 1s NSTimer redraws from state
-  gauge.rs             draws the session % pie as a template NSImage
+  gauge.rs             draws the session % pie as a colored NSImage (green→red ramp)
   poller.rs            worker thread polls a Provider into Arc<Mutex<AppState>>
   watch.rs             notify watcher on ~/.claude/projects to refresh per turn
   token.rs             OAuth access-token cache + refresh-token rotation
@@ -19,15 +19,19 @@ src/
   provider/
     mod.rs             Provider trait + normalized UsageWindow / UsageSnapshot / FetchError
     claude.rs          ClaudeProvider: keychain -> HTTP GET -> parse
-packaging/Info.plist   .app bundle metadata (LSUIElement agent app)
+packaging/Info.plist   .app bundle metadata (LSUIElement agent app, CFBundleIconFile)
+packaging/AppIcon.icns  app icon (generated; committed)
+scripts/render_icon.swift one-shot Swift renderer for the icon images
+scripts/make-icon.sh   render_icon.swift → packaging/AppIcon.icns (iconutil)
 scripts/setup-signing.sh  one-time: create the self-signed signing identity
-scripts/install.sh     build + sign + bundle + register login LaunchAgent
+scripts/install.sh     build + sign + bundle + icon + register login LaunchAgent
 scripts/uninstall.sh   remove agent + .app
 ```
 
-The status bar shows a small **session pie gauge** (`gauge.rs`, a template
-`NSImage` so it adapts to light/dark) to the left of the `session% / weekly%`
-text.
+The status bar shows a small **session pie gauge** (`gauge.rs`) to the left of
+the `session% / weekly%` text. The fill is tinted by a green→red ramp
+(`level_color`) so the level reads at a glance; a neutral gray track ring stays
+visible on light and dark menu bars. The same ramp at 40% drives the app icon.
 
 Threading: the worker thread does all I/O and writes `AppState`; the main
 thread only reads it (AppKit must be touched on the main thread only).
@@ -89,9 +93,15 @@ Requires Rust ≥ 1.85 (deps use edition 2024). First run may trigger a one-time
 
 ```sh
 scripts/setup-signing.sh   # once: self-signed identity (stable Keychain grant)
-scripts/install.sh         # build, sign, install ~/Applications/AI-usage.app, register LaunchAgent
+scripts/install.sh         # build, sign, install /Applications/AI-usage.app, register LaunchAgent
 scripts/uninstall.sh       # remove it
 ```
+
+`install.sh` installs to `/Applications` (falls back to `~/Applications` if
+that isn't writable), copies `AppIcon.icns` into the bundle's Resources, and
+runs `lsregister` so the app + icon show in Finder / Launchpad / Spotlight.
+Regenerate the icon with `scripts/make-icon.sh` after editing
+`render_icon.swift`.
 
 ### Code signing
 

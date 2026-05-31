@@ -10,6 +10,8 @@
     <string>com.machine.ai-usage</string>
     <key>CFBundleExecutable</key>
     <string>ai-usage</string>
+    <key>CFBundleIconFile</key>
+    <string>AppIcon</string>
     <key>CFBundleVersion</key>
     <string>0.1.0</string>
     <key>CFBundleShortVersionString</key>
