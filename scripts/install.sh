@@ -20,6 +20,23 @@ cp "$ROOT/target/release/ai-usage" "$APP_DIR/Contents/MacOS/ai-usage"
 cp "$ROOT/packaging/Info.plist" "$APP_DIR/Contents/Info.plist"
 BIN="$APP_DIR/Contents/MacOS/ai-usage"
 
+echo "==> Code-signing"
+IDENTITY="AI-usage Local"
+if security find-identity -p codesigning | grep -q "$IDENTITY"; then
+    # Stable self-signed identity: keeps the Keychain "Always Allow" across
+    # rebuilds. Fixed --identifier so the designated requirement is stable.
+    codesign --force --options runtime \
+        --identifier "$BUNDLE_ID" \
+        --sign "$IDENTITY" "$APP_DIR"
+    echo "    signed with '$IDENTITY'"
+else
+    # No stable identity: ad-hoc sign (changes each build → Keychain may
+    # re-prompt). Run scripts/setup-signing.sh once to fix this.
+    codesign --force --identifier "$BUNDLE_ID" --sign - "$APP_DIR"
+    echo "    ad-hoc signed (run scripts/setup-signing.sh for a stable identity)"
+fi
+codesign --verify --deep --strict "$APP_DIR" && echo "    signature verified"
+
 # Resolve a proxy for the login context (GUI launch has no shell env). Prefer
 # the current shell's proxy, else the macOS system proxy. The app also falls
 # back to scutil at runtime, so this is belt-and-suspenders.

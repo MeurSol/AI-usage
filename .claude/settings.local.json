@@ -48,7 +48,23 @@
       "Bash(pkill -f \"Applications/AI-usage.app\")",
       "Bash(pkill -f \"target/debug/ai-usage\")",
       "Bash(screencapture -x -R1300,0,1260,28 /tmp/aiusage_triggers.png)",
-      "Bash(git commit -q -m 'feat: token auto-refresh + finer-grained refresh triggers *)"
+      "Bash(git commit -q -m 'feat: token auto-refresh + finer-grained refresh triggers *)",
+      "Bash(security find-identity *)",
+      "Bash(codesign -dv --verbose=2 __TRACKED_VAR__/Applications/AI-usage.app)",
+      "Bash(bash scripts/setup-signing.sh)",
+      "Bash(echo \"pid $!\")",
+      "Bash(/bin/sleep 1)",
+      "Bash(cp -R __TRACKED_VAR__/Applications/AI-usage.app /tmp/sign-test.app)",
+      "Bash(codesign --force --options runtime --identifier com.machine.ai-usage --sign \"AI-usage Local\" /tmp/sign-test.app)",
+      "Bash(echo \"rc=$?\")",
+      "Bash(codesign --verify --strict /tmp/sign-test.app)",
+      "Bash(codesign -d --requirements - /tmp/sign-test.app)",
+      "Bash(codesign -d --requirements - __TRACKED_VAR__/Applications/AI-usage.app)",
+      "Bash(cp -R __TRACKED_VAR__/Applications/AI-usage.app /tmp/resign-test.app)",
+      "Bash(codesign --force --options runtime --identifier com.machine.ai-usage --sign \"AI-usage Local\" /tmp/resign-test.app)",
+      "Bash(codesign -d --requirements - /tmp/resign-test.app)",
+      "Bash(chmod +x scripts/setup-signing.sh)",
+      "Bash(git commit -q -m 'feat: stable self-signed code signing *)"
     ]
   }
 }
