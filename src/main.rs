@@ -1,3 +1,4 @@
+mod gauge;
 mod keychain;
 mod menubar;
 mod poller;

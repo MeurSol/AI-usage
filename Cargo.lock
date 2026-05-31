@@ -13,6 +13,7 @@ name = "ai-usage"
 version = "0.1.0"
 dependencies = [
  "anyhow",
+ "block2",
  "chrono",
  "notify",
  "objc2",

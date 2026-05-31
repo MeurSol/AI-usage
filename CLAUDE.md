@@ -11,6 +11,7 @@ dropdown lists each window with its reset time, and a Quit item.
 src/
   main.rs              NSApplication (accessory) bootstrap + run loop
   menubar.rs           AppKit status item + dropdown; 1s NSTimer redraws from state
+  gauge.rs             draws the session % pie as a template NSImage
   poller.rs            worker thread polls a Provider into Arc<Mutex<AppState>>
   watch.rs             notify watcher on ~/.claude/projects to refresh per turn
   token.rs             OAuth access-token cache + refresh-token rotation
@@ -19,9 +20,14 @@ src/
     mod.rs             Provider trait + normalized UsageWindow / UsageSnapshot / FetchError
     claude.rs          ClaudeProvider: keychain -> HTTP GET -> parse
 packaging/Info.plist   .app bundle metadata (LSUIElement agent app)
-scripts/install.sh     build + bundle + register login LaunchAgent
+scripts/setup-signing.sh  one-time: create the self-signed signing identity
+scripts/install.sh     build + sign + bundle + register login LaunchAgent
 scripts/uninstall.sh   remove agent + .app
 ```
+
+The status bar shows a small **session pie gauge** (`gauge.rs`, a template
+`NSImage` so it adapts to light/dark) to the left of the `session% / weekly%`
+text.
 
 Threading: the worker thread does all I/O and writes `AppState`; the main
 thread only reads it (AppKit must be touched on the main thread only).
@@ -82,9 +88,22 @@ Requires Rust ≥ 1.85 (deps use edition 2024). First run may trigger a one-time
 ### Install / launch at login
 
 ```sh
-scripts/install.sh     # build, install ~/Applications/AI-usage.app, register LaunchAgent
-scripts/uninstall.sh   # remove it
+scripts/setup-signing.sh   # once: self-signed identity (stable Keychain grant)
+scripts/install.sh         # build, sign, install ~/Applications/AI-usage.app, register LaunchAgent
+scripts/uninstall.sh       # remove it
 ```
+
+### Code signing
+
+`setup-signing.sh` creates a self-signed code-signing identity `AI-usage Local`
+in the login keychain (openssl `-legacy` PKCS12 so macOS `security` imports it).
+It is **untrusted for Gatekeeper** (we launch the app directly, so that's fine)
+and therefore does not appear under `security find-identity -v`; match it
+without `-v`. `install.sh` signs the bundle with it using a fixed
+`--identifier com.machine.ai-usage`, so the designated requirement
+(`identifier … and certificate leaf = H"…"`) is **stable across rebuilds** —
+which keeps the Keychain "Always Allow" grant for the OAuth token. Without the
+identity, `install.sh` falls back to ad-hoc (grant resets each rebuild).
 
 `install.sh` assembles the `.app` (using `packaging/Info.plist`) and writes a
 LaunchAgent at `~/Library/LaunchAgents/com.machine.ai-usage.plist` with

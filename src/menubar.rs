@@ -7,10 +7,12 @@ use objc2::rc::Retained;
 use objc2::runtime::{NSObject, NSObjectProtocol, ProtocolObject};
 use objc2::{define_class, msg_send, sel, DefinedClass, MainThreadMarker, MainThreadOnly};
 use objc2_app_kit::{
-    NSMenu, NSMenuDelegate, NSMenuItem, NSStatusBar, NSStatusItem, NSVariableStatusItemLength,
+    NSCellImagePosition, NSMenu, NSMenuDelegate, NSMenuItem, NSStatusBar, NSStatusItem,
+    NSVariableStatusItemLength,
 };
 use objc2_foundation::{NSString, NSTimer};
 
+use crate::gauge;
 use crate::poller::{Shared, Status, Trigger};
 
 pub struct Ivars {
@@ -47,9 +49,16 @@ define_class!(
 impl Controller {
     fn refresh(&self) {
         let mtm = MainThreadMarker::from(self);
-        let (title, lines) = render(&self.ivars().shared);
+        let (session_frac, title, lines) = render(&self.ivars().shared);
 
         if let Some(button) = self.ivars().item.button(mtm) {
+            match session_frac {
+                Some(frac) => {
+                    button.setImage(Some(&gauge::session_gauge(frac / 100.0)));
+                    button.setImagePosition(NSCellImagePosition::ImageLeft);
+                }
+                None => button.setImage(None),
+            }
             button.setTitle(&NSString::from_str(&title));
         }
 
@@ -107,8 +116,9 @@ pub fn install(mtm: MainThreadMarker, shared: Shared, trigger: Trigger) -> Retai
     controller
 }
 
-/// Produce the bar title and the dropdown lines for the current state.
-fn render(shared: &Shared) -> (String, Vec<String>) {
+/// Produce the session gauge fraction (session %, `None` when no data), the bar
+/// title, and the dropdown lines for the current state.
+fn render(shared: &Shared) -> (Option<f64>, String, Vec<String>) {
     let state = shared.lock().expect("state lock");
     match &state.snapshot {
         Some(snap) => {
@@ -137,21 +147,24 @@ fn render(shared: &Shared) -> (String, Vec<String>) {
             if state.status == Status::Stale {
                 lines.push("⚠︎ offline — showing last update".into());
             }
-            (title, lines)
+            let session = snap.windows.first().map(|w| w.utilization);
+            (session, title, lines)
         }
         None => match state.status {
             Status::AuthExpired => (
+                None,
                 "auth?".into(),
                 vec!["Auth expired — re-login in Claude Code".into()],
             ),
             Status::Error => (
+                None,
                 "—".into(),
                 vec![format!(
                     "Error: {}",
                     state.message.clone().unwrap_or_default()
                 )],
             ),
-            _ => ("…".into(), vec!["Loading…".into()]),
+            _ => (None, "…".into(), vec!["Loading…".into()]),
         },
     }
 }

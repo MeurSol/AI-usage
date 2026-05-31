@@ -64,7 +64,18 @@
       "Bash(codesign --force --options runtime --identifier com.machine.ai-usage --sign \"AI-usage Local\" /tmp/resign-test.app)",
       "Bash(codesign -d --requirements - /tmp/resign-test.app)",
       "Bash(chmod +x scripts/setup-signing.sh)",
-      "Bash(git commit -q -m 'feat: stable self-signed code signing *)"
+      "Bash(git commit -q -m 'feat: stable self-signed code signing *)",
+      "Bash(screencapture -x -R1300,0,1260,28 /tmp/gauge_bar.png)",
+      "Bash(/bin/sleep 3)",
+      "Bash(break)",
+      "Bash(screencapture -x -R1300,0,1260,28 /tmp/gauge_fake.png)",
+      "Bash(screencapture -x -R1395,4,150,20 /tmp/gauge_zoom.png)",
+      "Bash(screencapture -x -R1300,2,170,22 /tmp/gauge_zoom2.png)",
+      "Bash(AIUSAGE_FAKE=1 ./target/debug/ai-usage)",
+      "Bash(screencapture -x -R1290,0,260,28 /tmp/gauge_confirm.png)",
+      "Bash(codesign -dv __TRACKED_VAR__/Applications/AI-usage.app)",
+      "Bash(git commit -q -m 'feat: session % pie gauge in the menu bar *)",
+      "Bash(rm -f /tmp/gauge*.png /tmp/install*.log /tmp/signsetup*.log /tmp/u.json)"
     ]
   }
 }
