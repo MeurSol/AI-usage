@@ -95,7 +95,15 @@
       "Bash(sips -s format png packaging/AppIcon.icns --out /tmp/iconA_check.png)",
       "Bash(pkill -f \"AI-usage.app\")",
       "Bash(swift /tmp/checkiconA.swift)",
-      "Bash(git commit -q -m 'feat: refine app icon to Apple activity-ring style *)"
+      "Bash(git commit -q -m 'feat: refine app icon to Apple activity-ring style *)",
+      "Bash(awk '{printf \"%-8s RSS=%sMB  %s\\\\n\", $2, int\\($6/1024\\), $11}')",
+      "Bash(grep -vE '^\\\\s*\\(//|$\\)')",
+      "Bash(awk -F: '{s+=$2} END{print s}')",
+      "Bash(sips -s format png -Z 256 packaging/AppIcon.icns --out docs/icon.png)",
+      "Bash(git config *)",
+      "Bash(echo \"git user.name: $\\(git config user.name 2>/dev/null || echo '\\(unset\\)'\\)\")",
+      "Bash(echo \"git user.email: $\\(git config user.email 2>/dev/null || echo '\\(unset\\)'\\)\")",
+      "Bash(git commit -q -m 'docs: add README and MIT LICENSE *)"
     ]
   }
 }
