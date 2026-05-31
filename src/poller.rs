@@ -112,17 +112,18 @@ pub fn spawn<P: Provider + Send + 'static>(provider: P) -> (Shared, Trigger) {
 
 /// Time until the next fetch: the soonest limit reset (plus margin) if that is
 /// sooner than the heartbeat, otherwise the heartbeat. Floored at `MIN_WAIT`.
+///
+/// A reset that's already in the past gives no useful wake-up: the server's
+/// rollover can lag its own `resets_at`, and a 429 keeps the stale (past-reset)
+/// snapshot — so anchoring on it would busy-poll at the margin and hammer the
+/// endpoint into a sustained 429. In that case we fall back to the heartbeat.
 fn next_wait(state: &AppState) -> Duration {
+    let margin = chrono::Duration::from_std(RESET_MARGIN).unwrap_or_default();
     let until_reset = state
         .snapshot
         .as_ref()
         .and_then(|s| s.windows.iter().map(|w| w.resets_at).min())
-        .map(|reset| {
-            (reset - Local::now())
-                .to_std()
-                .unwrap_or(Duration::ZERO)
-                + RESET_MARGIN
-        });
+        .and_then(|reset| (reset - Local::now() + margin).to_std().ok());
     until_reset
         .map_or(HEARTBEAT, |r| r.min(HEARTBEAT))
         .max(MIN_WAIT)
@@ -179,10 +180,12 @@ mod tests {
     }
 
     #[test]
-    fn passed_reset_is_floored() {
-        // Reset already elapsed -> floored at MIN_WAIT, no busy loop.
+    fn passed_reset_falls_back_to_heartbeat() {
+        // Reset already elapsed (the server's rollover can lag its resets_at) ->
+        // don't busy-poll at the margin; wait out the heartbeat so a 429 can't
+        // get sustained.
         let state = state_with_resets(&[-5]);
-        assert_eq!(next_wait(&state), RESET_MARGIN.max(MIN_WAIT));
+        assert_eq!(next_wait(&state), HEARTBEAT);
     }
 }
 

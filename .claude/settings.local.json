@@ -104,7 +104,11 @@
       "Bash(echo \"git user.name: $\\(git config user.name 2>/dev/null || echo '\\(unset\\)'\\)\")",
       "Bash(echo \"git user.email: $\\(git config user.email 2>/dev/null || echo '\\(unset\\)'\\)\")",
       "Bash(git commit -q -m 'docs: add README and MIT LICENSE *)",
-      "Bash(git commit -q -m 'perf: redraw the menu bar only when state changes *)"
+      "Bash(git commit -q -m 'perf: redraw the menu bar only when state changes *)",
+      "Bash(python3 -c \"import sys,json,datetime; d=json.load\\(sys.stdin\\); [print\\(k, '->', v\\) for k,v in d.items\\(\\) if k in \\('five_hour','seven_day','seven_day_opus','seven_day_sonnet'\\)]; print\\('now    ->', datetime.datetime.now\\(datetime.timezone.utc\\).isoformat\\(\\)\\)\")",
+      "Bash(python3 -c ' *)",
+      "Bash(scripts/install.sh)",
+      "Bash(git commit *)"
     ]
   }
 }
