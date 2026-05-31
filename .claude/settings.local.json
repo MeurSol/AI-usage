@@ -40,7 +40,15 @@
       "Bash(bash scripts/install.sh)",
       "Bash(launchctl print *)",
       "Bash(screencapture -x -R1300,0,1260,28 /tmp/aiusage_app.png)",
-      "Bash(git commit -q -m 'feat: .app bundle + launch-at-login installer *)"
+      "Bash(git commit -q -m 'feat: .app bundle + launch-at-login installer *)",
+      "Bash(grep -oiE 'expires_in.{0,60}')",
+      "Bash(umask 077)",
+      "Bash(python3 -c \"import json;d=json.load\\(open\\('/tmp/cc-cred-backup.json'\\)\\);print\\('keys ok:', list\\(d.get\\('claudeAiOauth',{}\\).keys\\(\\)\\), 'expiresAt:', d['claudeAiOauth']['expiresAt']\\)\")",
+      "Bash(python3 -c \"import json,datetime;d=json.load\\(open\\('/tmp/cc-cred-backup.json'\\)\\);print\\(datetime.datetime.fromtimestamp\\(d['claudeAiOauth']['expiresAt']/1000\\)\\)\")",
+      "Bash(pkill -f \"Applications/AI-usage.app\")",
+      "Bash(pkill -f \"target/debug/ai-usage\")",
+      "Bash(screencapture -x -R1300,0,1260,28 /tmp/aiusage_triggers.png)",
+      "Bash(git commit -q -m 'feat: token auto-refresh + finer-grained refresh triggers *)"
     ]
   }
 }

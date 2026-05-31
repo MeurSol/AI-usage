@@ -6,10 +6,17 @@ use chrono::{DateTime, Local};
 use serde::Deserialize;
 
 use super::{FetchError, Provider, UsageSnapshot, UsageWindow};
-use crate::keychain;
+use crate::token::TokenManager;
 
 const USAGE_URL: &str = "https://api.anthropic.com/api/oauth/usage";
 const OAUTH_BETA: &str = "oauth-2025-04-20";
+
+/// Outcome of a single usage GET, distinguishing a rejected token (so we can
+/// refresh and retry) from other failures.
+enum GetError {
+    Unauthorized,
+    Other(anyhow::Error),
+}
 
 #[derive(Deserialize)]
 struct RawWindow {
@@ -71,6 +78,7 @@ fn system_proxy_url() -> Option<String> {
 
 pub struct ClaudeProvider {
     agent: ureq::Agent,
+    tokens: TokenManager,
 }
 
 impl ClaudeProvider {
@@ -81,8 +89,10 @@ impl ClaudeProvider {
         let config = ureq::Agent::config_builder()
             .proxy(http_proxy())
             .build();
+        let agent = ureq::Agent::new_with_config(config);
         ClaudeProvider {
-            agent: ureq::Agent::new_with_config(config),
+            tokens: TokenManager::new(agent.clone()),
+            agent,
         }
     }
 
@@ -106,9 +116,8 @@ impl ClaudeProvider {
     }
 }
 
-impl Provider for ClaudeProvider {
-    fn fetch(&self) -> Result<UsageSnapshot, FetchError> {
-        let token = keychain::claude_access_token().map_err(FetchError::Other)?;
+impl ClaudeProvider {
+    fn get_usage(&self, token: &str) -> Result<UsageSnapshot, GetError> {
         match self
             .agent
             .get(USAGE_URL)
@@ -120,13 +129,33 @@ impl Provider for ClaudeProvider {
                 let body = resp
                     .body_mut()
                     .read_to_string()
-                    .context("read usage response body")?;
-                Self::parse(&body).map_err(FetchError::Other)
+                    .map_err(|e| GetError::Other(anyhow::Error::new(e).context("read usage body")))?;
+                Self::parse(&body).map_err(GetError::Other)
             }
-            Err(ureq::Error::StatusCode(401)) => Err(FetchError::AuthExpired),
-            Err(e) => Err(FetchError::Other(
+            Err(ureq::Error::StatusCode(401)) => Err(GetError::Unauthorized),
+            Err(e) => Err(GetError::Other(
                 anyhow::Error::new(e).context("usage request failed"),
             )),
+        }
+    }
+}
+
+impl Provider for ClaudeProvider {
+    fn fetch(&self) -> Result<UsageSnapshot, FetchError> {
+        let token = self.tokens.access_token().map_err(FetchError::Other)?;
+        match self.get_usage(&token) {
+            Ok(snapshot) => Ok(snapshot),
+            // Token rejected: refresh once and retry. A failure now means the
+            // refresh_token itself is bad — the user must re-login.
+            Err(GetError::Unauthorized) => {
+                let token = self.tokens.refresh_now().map_err(|_| FetchError::AuthExpired)?;
+                match self.get_usage(&token) {
+                    Ok(snapshot) => Ok(snapshot),
+                    Err(GetError::Unauthorized) => Err(FetchError::AuthExpired),
+                    Err(GetError::Other(e)) => Err(FetchError::Other(e)),
+                }
+            }
+            Err(GetError::Other(e)) => Err(FetchError::Other(e)),
         }
     }
 }

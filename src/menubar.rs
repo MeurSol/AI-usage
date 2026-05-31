@@ -4,17 +4,18 @@
 
 use chrono::{DateTime, Local};
 use objc2::rc::Retained;
-use objc2::runtime::NSObject;
+use objc2::runtime::{NSObject, NSObjectProtocol, ProtocolObject};
 use objc2::{define_class, msg_send, sel, DefinedClass, MainThreadMarker, MainThreadOnly};
 use objc2_app_kit::{
-    NSMenu, NSMenuItem, NSStatusBar, NSStatusItem, NSVariableStatusItemLength,
+    NSMenu, NSMenuDelegate, NSMenuItem, NSStatusBar, NSStatusItem, NSVariableStatusItemLength,
 };
 use objc2_foundation::{NSString, NSTimer};
 
-use crate::poller::{Shared, Status};
+use crate::poller::{Shared, Status, Trigger};
 
 pub struct Ivars {
     shared: Shared,
+    trigger: Trigger,
     item: Retained<NSStatusItem>,
 }
 
@@ -29,6 +30,16 @@ define_class!(
         #[unsafe(method(tick:))]
         fn tick(&self, _timer: Option<&NSTimer>) {
             self.refresh();
+        }
+    }
+
+    unsafe impl NSObjectProtocol for Controller {}
+
+    // Fetch fresh numbers right when the user opens the dropdown.
+    unsafe impl NSMenuDelegate for Controller {
+        #[unsafe(method(menuNeedsUpdate:))]
+        fn menu_needs_update(&self, _menu: &NSMenu) {
+            self.ivars().trigger.fire();
         }
     }
 );
@@ -61,20 +72,24 @@ impl Controller {
         };
         menu.addItem(&quit);
 
+        // Delegate fires menuNeedsUpdate: → a fresh fetch when the menu opens.
+        menu.setDelegate(Some(ProtocolObject::from_ref(self)));
         self.ivars().item.setMenu(Some(&menu));
     }
 }
 
 /// Build the status item, controller and refresh timer. The returned
 /// `Controller` (and the status item it holds) must be kept alive.
-pub fn install(mtm: MainThreadMarker, shared: Shared) -> Retained<Controller> {
+pub fn install(mtm: MainThreadMarker, shared: Shared, trigger: Trigger) -> Retained<Controller> {
     let item = NSStatusBar::systemStatusBar().statusItemWithLength(NSVariableStatusItemLength);
     if let Some(button) = item.button(mtm) {
         button.setTitle(&NSString::from_str("…"));
     }
 
     let controller = {
-        let this = mtm.alloc::<Controller>().set_ivars(Ivars { shared, item });
+        let this = mtm
+            .alloc::<Controller>()
+            .set_ivars(Ivars { shared, trigger, item });
         let this: Retained<Controller> = unsafe { msg_send![super(this), init] };
         this
     };

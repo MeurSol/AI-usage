@@ -13,7 +13,8 @@ src/
   menubar.rs           AppKit status item + dropdown; 1s NSTimer redraws from state
   poller.rs            worker thread polls a Provider into Arc<Mutex<AppState>>
   watch.rs             notify watcher on ~/.claude/projects to refresh per turn
-  keychain.rs          read the Claude OAuth token from the macOS Keychain
+  token.rs             OAuth access-token cache + refresh-token rotation
+  keychain.rs          read/write the Claude OAuth credentials in the Keychain
   provider/
     mod.rs             Provider trait + normalized UsageWindow / UsageSnapshot / FetchError
     claude.rs          ClaudeProvider: keychain -> HTTP GET -> parse
@@ -25,12 +26,21 @@ scripts/uninstall.sh   remove agent + .app
 Threading: the worker thread does all I/O and writes `AppState`; the main
 thread only reads it (AppKit must be touched on the main thread only).
 
-### Refresh timing
+### Refresh timing (`poller.rs`)
 
-The worker fetches at startup, then waits on a channel that is signaled either
-by the periodic interval (60s fallback) or by `watch.rs`. The watcher fires
-when Claude Code appends to a `*.jsonl` under `~/.claude/projects` — i.e. right
-after a conversation turn — so usage updates ~immediately (800ms debounce).
+The worker fetches, then sleeps until the soonest of several triggers
+(`next_wait` picks the interval):
+
+- **Turn event** — `watch.rs` signals on `*.jsonl` writes under
+  `~/.claude/projects` (a conversation turn); 800ms debounce.
+- **Menu open** — the `NSMenuDelegate` (`menubar.rs`) fires a `Trigger` so the
+  numbers are fresh the moment the dropdown opens.
+- **Reset boundary** — wakes ~3s after the soonest window's `resets_at`, so the
+  bar updates at a reset even with no conversation active.
+- **Heartbeat** — 60s ceiling so it stays current regardless.
+
+Trigger-driven fetches are rate-limited to one per `MIN_TRIGGER_GAP` (5s) so
+rapid menu opens / turn bursts coalesce and don't hit the endpoint's 429.
 
 ## Data source
 
@@ -38,12 +48,25 @@ The official usage data is fetched the same way Claude Code's `/usage` does —
 no log scraping:
 
 - **Token**: macOS Keychain generic-password, service `Claude Code-credentials`,
-  account = login short name. JSON blob → `claudeAiOauth.accessToken`.
+  account = login short name. JSON blob → `claudeAiOauth.{accessToken,
+  refreshToken, expiresAt}`.
 - **Endpoint**: `GET https://api.anthropic.com/api/oauth/usage`
   - headers: `Authorization: Bearer <token>`, `anthropic-beta: oauth-2025-04-20`
   - response: `five_hour` (session) and `seven_day` (weekly), each
     `{ utilization: f64, resets_at: RFC3339 }`. Other fields
     (`seven_day_opus`, `extra_usage`, …) are currently ignored.
+  - returns **429** if polled too aggressively — handled as a transient error
+    (keeps the last snapshot, retries next tick).
+
+### Token auto-refresh (`token.rs`)
+
+When the Keychain access token is within 60s of `expiresAt` (or a usage call
+returns 401), `TokenManager` refreshes it:
+`POST https://platform.claude.com/v1/oauth/token` with
+`{ grant_type: "refresh_token", refresh_token, client_id }` (Claude Code's
+client_id). The rotated `access_token` / `refresh_token` are **written back to
+the Keychain** (preserving all other fields) so Claude Code stays in sync, and
+cached in memory. Only if the refresh itself fails does the bar show `auth?`.
 
 ## Build & run
 
@@ -99,8 +122,6 @@ The UI and poller are provider-agnostic and need no changes.
 
 ## Follow-ups (not yet built)
 
-- OAuth token auto-refresh on expiry (currently shows `auth?` → re-login in
-  Claude Code).
 - Opus/Sonnet weekly breakdown + `extra_usage` display.
 - API usage / Codex providers.
 - Code-sign the bundle (unsigned binaries may re-prompt for Keychain access
