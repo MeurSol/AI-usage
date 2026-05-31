@@ -108,7 +108,9 @@
       "Bash(python3 -c \"import sys,json,datetime; d=json.load\\(sys.stdin\\); [print\\(k, '->', v\\) for k,v in d.items\\(\\) if k in \\('five_hour','seven_day','seven_day_opus','seven_day_sonnet'\\)]; print\\('now    ->', datetime.datetime.now\\(datetime.timezone.utc\\).isoformat\\(\\)\\)\")",
       "Bash(python3 -c ' *)",
       "Bash(scripts/install.sh)",
-      "Bash(git commit *)"
+      "Bash(git commit *)",
+      "Bash(sample 55481 2 -mayDie)",
+      "Bash(sample 55481 1 -mayDie)"
     ]
   }
 }

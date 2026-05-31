@@ -38,6 +38,14 @@ define_class!(
         fn tick(&self, _timer: Option<&NSTimer>) {
             self.refresh();
         }
+
+        // "Refresh now" menu item: an explicit manual query. Fires the same
+        // trigger the menu-open delegate does, so it goes through the poller's
+        // normal fetch + rate-limit path (i.e. it counts as one real query).
+        #[unsafe(method(refreshNow:))]
+        fn refresh_now(&self, _sender: Option<&NSMenuItem>) {
+            self.ivars().trigger.fire();
+        }
     }
 
     unsafe impl NSObjectProtocol for Controller {}
@@ -82,6 +90,19 @@ impl Controller {
             menu.addItem(&mi);
         }
         menu.addItem(&NSMenuItem::separatorItem(mtm));
+
+        // Manual query. Target is the controller itself (the delegate), which
+        // implements refreshNow:.
+        let refresh = unsafe {
+            NSMenuItem::initWithTitle_action_keyEquivalent(
+                NSMenuItem::alloc(mtm),
+                &NSString::from_str("Refresh now"),
+                Some(sel!(refreshNow:)),
+                &NSString::from_str("r"),
+            )
+        };
+        unsafe { refresh.setTarget(Some(&**self)) };
+        menu.addItem(&refresh);
 
         // nil target => `terminate:` is resolved up the responder chain to NSApp.
         let quit = unsafe {
