@@ -57,6 +57,8 @@ pub struct AppState {
     /// Human-readable detail for the error/stale case.
     pub message: Option<String>,
     pub updated_at: Option<DateTime<Local>>,
+    /// True while a fetch is in flight, so the UI can show a spinner.
+    pub refreshing: bool,
     /// Bumped on every state update so the UI can skip redundant redraws.
     pub version: u64,
 }
@@ -71,6 +73,7 @@ pub fn spawn<P: Provider + Send + 'static>(provider: P) -> (Shared, Trigger) {
         status: Status::Loading,
         message: None,
         updated_at: None,
+        refreshing: false,
         version: 0,
     }));
 
@@ -82,6 +85,9 @@ pub fn spawn<P: Provider + Send + 'static>(provider: P) -> (Shared, Trigger) {
         let _watcher = watcher; // keep the FS watcher alive for the thread's life
         loop {
             let last_fetch = Instant::now();
+            // Mark in-flight so the UI spins while the (possibly slow) network
+            // fetch runs; apply() clears it. Read directly, not version-gated.
+            worker.lock().expect("state lock").refreshing = true;
             let result = provider.fetch();
             let wait = {
                 let mut state = worker.lock().expect("state lock");
@@ -148,6 +154,7 @@ mod tests {
             status: Status::Ok,
             message: None,
             updated_at: None,
+            refreshing: false,
             version: 0,
         }
     }
@@ -159,6 +166,7 @@ mod tests {
             status: Status::Loading,
             message: None,
             updated_at: None,
+            refreshing: false,
             version: 0,
         };
         assert_eq!(next_wait(&state), HEARTBEAT);
@@ -191,6 +199,7 @@ mod tests {
 
 /// Fold one fetch result into the state, preserving the last good snapshot.
 fn apply(state: &mut AppState, result: Result<UsageSnapshot, FetchError>) {
+    state.refreshing = false;
     state.version = state.version.wrapping_add(1);
     match result {
         Ok(snapshot) => {

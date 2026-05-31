@@ -10,7 +10,7 @@ dropdown lists each window with its reset time, and a Quit item.
 ```
 src/
   main.rs              NSApplication (accessory) bootstrap + run loop
-  menubar.rs           AppKit status item + dropdown; 1s NSTimer redraws from state
+  menubar.rs           AppKit status item + dropdown; ~10fps NSTimer: spinner while fetching, else version-gated redraw
   gauge.rs             draws the session % pie as a colored NSImage (green→red ramp)
   poller.rs            worker thread polls a Provider into Arc<Mutex<AppState>>
   watch.rs             notify watcher on ~/.claude/projects to refresh per turn
@@ -35,9 +35,11 @@ visible on light and dark menu bars. The same ramp at 40% drives the app icon.
 
 Threading: the worker thread does all I/O and writes `AppState`; the main
 thread only reads it (AppKit must be touched on the main thread only).
-`AppState.version` is bumped on every state update; the 1s UI timer skips the
-redraw (rebuilding the gauge image + menu) when the version is unchanged, so
-idle ticks are cheap.
+`AppState.version` is bumped on every state update; the UI timer (~10fps, to
+animate the spinner) skips the redraw (rebuilding the gauge image + menu) when
+the version is unchanged and no fetch is in flight, so idle ticks are cheap.
+While a fetch runs (`AppState.refreshing`), the timer instead spins a small
+indicator in the gauge slot (`gauge::spinner`).
 
 ### Refresh timing (`poller.rs`)
 
@@ -46,14 +48,14 @@ The worker fetches, then sleeps until the soonest of several triggers
 
 - **Turn event** — `watch.rs` signals on `*.jsonl` writes under
   `~/.claude/projects` (a conversation turn); 800ms debounce.
-- **Menu open** — the `NSMenuDelegate` (`menubar.rs`) fires a `Trigger` so the
-  numbers are fresh the moment the dropdown opens.
+- **Manual refresh** — the **Refresh now** menu item fires a `Trigger`. This is
+  the only user-driven query; opening the dropdown no longer fetches.
 - **Reset boundary** — wakes ~3s after the soonest window's `resets_at`, so the
   bar updates at a reset even with no conversation active.
 - **Heartbeat** — 60s ceiling so it stays current regardless.
 
 Trigger-driven fetches are rate-limited to one per `MIN_TRIGGER_GAP` (5s) so
-rapid menu opens / turn bursts coalesce and don't hit the endpoint's 429.
+rapid Refresh-now clicks / turn bursts coalesce and don't hit the endpoint's 429.
 
 ## Data source
 

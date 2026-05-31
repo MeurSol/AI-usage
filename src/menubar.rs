@@ -1,17 +1,17 @@
 //! macOS status bar item + dropdown menu, driven by the shared `AppState`.
-//! A 1-second NSTimer ticks the controller; it redraws the title and menu only
-//! when the state's `version` has changed since the last redraw, so idle ticks
-//! are cheap. All AppKit access stays on the main thread.
+//! A short-interval NSTimer ticks the controller: it animates a spinner while a
+//! fetch is in flight, and otherwise redraws the title and menu only when the
+//! state's `version` changed, so idle ticks stay cheap. All AppKit access stays
+//! on the main thread.
 
 use std::cell::Cell;
 
 use chrono::{DateTime, Local};
 use objc2::rc::Retained;
-use objc2::runtime::{NSObject, NSObjectProtocol, ProtocolObject};
+use objc2::runtime::{NSObject, NSObjectProtocol};
 use objc2::{define_class, msg_send, sel, DefinedClass, MainThreadMarker, MainThreadOnly};
 use objc2_app_kit::{
-    NSCellImagePosition, NSMenu, NSMenuDelegate, NSMenuItem, NSStatusBar, NSStatusItem,
-    NSVariableStatusItemLength,
+    NSCellImagePosition, NSMenu, NSMenuItem, NSStatusBar, NSStatusItem, NSVariableStatusItemLength,
 };
 use objc2_foundation::{NSString, NSTimer};
 
@@ -24,6 +24,8 @@ pub struct Ivars {
     item: Retained<NSStatusItem>,
     /// Last `AppState.version` rendered; skip redraw when unchanged.
     last_version: Cell<Option<u64>>,
+    /// Spinner rotation in radians, advanced each tick while a fetch is in flight.
+    spin_phase: Cell<f64>,
 }
 
 define_class!(
@@ -39,9 +41,9 @@ define_class!(
             self.refresh();
         }
 
-        // "Refresh now" menu item: an explicit manual query. Fires the same
-        // trigger the menu-open delegate does, so it goes through the poller's
-        // normal fetch + rate-limit path (i.e. it counts as one real query).
+        // "Refresh now" menu item: the only user-driven query. Fires a trigger
+        // so the poller runs a real fetch through its normal rate-limited path
+        // (i.e. it counts as one real query). Opening the menu no longer fetches.
         #[unsafe(method(refreshNow:))]
         fn refresh_now(&self, _sender: Option<&NSMenuItem>) {
             self.ivars().trigger.fire();
@@ -49,27 +51,35 @@ define_class!(
     }
 
     unsafe impl NSObjectProtocol for Controller {}
-
-    // Fetch fresh numbers right when the user opens the dropdown.
-    unsafe impl NSMenuDelegate for Controller {
-        #[unsafe(method(menuNeedsUpdate:))]
-        fn menu_needs_update(&self, _menu: &NSMenu) {
-            self.ivars().trigger.fire();
-        }
-    }
 );
 
 impl Controller {
     fn refresh(&self) {
         let mtm = MainThreadMarker::from(self);
-        // Skip the redraw entirely when nothing has changed since last time.
-        let (session_frac, title, lines) = {
+        // Under one lock, decide what to draw. A fetch in flight => animate the
+        // spinner (not version-gated, so the frame advances); otherwise redraw
+        // only when the state version changed, keeping idle ticks cheap.
+        let draw = {
             let state = self.ivars().shared.lock().expect("state lock");
-            if self.ivars().last_version.get() == Some(state.version) {
+            if state.refreshing {
+                None
+            } else if self.ivars().last_version.get() == Some(state.version) {
                 return;
+            } else {
+                self.ivars().last_version.set(Some(state.version));
+                Some(render(&state))
             }
-            self.ivars().last_version.set(Some(state.version));
-            render(&state)
+        };
+
+        let Some((session_frac, title, lines)) = draw else {
+            // Spinner frame: spin the gauge slot, leave the numbers as they are.
+            let phase = self.ivars().spin_phase.get() + 0.45;
+            self.ivars().spin_phase.set(phase);
+            if let Some(button) = self.ivars().item.button(mtm) {
+                button.setImage(Some(&gauge::spinner(phase)));
+                button.setImagePosition(NSCellImagePosition::ImageLeft);
+            }
+            return;
         };
 
         if let Some(button) = self.ivars().item.button(mtm) {
@@ -115,8 +125,6 @@ impl Controller {
         };
         menu.addItem(&quit);
 
-        // Delegate fires menuNeedsUpdate: → a fresh fetch when the menu opens.
-        menu.setDelegate(Some(ProtocolObject::from_ref(self)));
         self.ivars().item.setMenu(Some(&menu));
     }
 }
@@ -135,14 +143,17 @@ pub fn install(mtm: MainThreadMarker, shared: Shared, trigger: Trigger) -> Retai
             trigger,
             item,
             last_version: Cell::new(None),
+            spin_phase: Cell::new(0.0),
         });
         let this: Retained<Controller> = unsafe { msg_send![super(this), init] };
         this
     };
 
+    // ~10 fps so the spinner is smooth while a fetch is in flight; idle ticks
+    // are version-gated and return early, so they stay cheap.
     unsafe {
         NSTimer::scheduledTimerWithTimeInterval_target_selector_userInfo_repeats(
-            1.0,
+            0.1,
             &controller,
             sel!(tick:),
             None,

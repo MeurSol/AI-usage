@@ -5,7 +5,7 @@
 use block2::RcBlock;
 use objc2::rc::Retained;
 use objc2::runtime::Bool;
-use objc2_app_kit::{NSBezierPath, NSColor, NSImage};
+use objc2_app_kit::{NSBezierPath, NSColor, NSImage, NSLineCapStyle};
 use objc2_foundation::{NSPoint, NSRect, NSSize};
 
 const SIZE: f64 = 14.0;
@@ -58,5 +58,33 @@ pub fn session_gauge(fraction: f64) -> Retained<NSImage> {
     });
 
     // Not a template image — we want the actual colors to show.
+    NSImage::imageWithSize_flipped_drawingHandler(size, false, &handler)
+}
+
+/// One frame of an indeterminate spinner: a 270° arc rotated by `phase`
+/// (radians), in neutral gray so it reads on light and dark bars. Shown in
+/// place of the session gauge while a usage fetch is in flight. Main thread only.
+pub fn spinner(phase: f64) -> Retained<NSImage> {
+    let size = NSSize::new(SIZE, SIZE);
+    let center = NSPoint::new(SIZE / 2.0, SIZE / 2.0);
+    let radius = (SIZE - 2.0 * INSET) / 2.0;
+    let start = 90.0 - phase.to_degrees(); // clockwise as phase grows
+
+    let handler = RcBlock::new(move |_rect: NSRect| -> Bool {
+        NSColor::colorWithWhite_alpha(0.6, 1.0).setStroke();
+        let arc = NSBezierPath::bezierPath();
+        arc.setLineWidth(1.6);
+        arc.setLineCapStyle(NSLineCapStyle::Round);
+        arc.appendBezierPathWithArcWithCenter_radius_startAngle_endAngle_clockwise(
+            center,
+            radius,
+            start,
+            start - 270.0,
+            true,
+        );
+        arc.stroke();
+        Bool::YES
+    });
+
     NSImage::imageWithSize_flipped_drawingHandler(size, false, &handler)
 }
