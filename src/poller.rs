@@ -1,7 +1,9 @@
-//! Background polling: a worker thread refreshes `AppState`. It fetches on
-//! several triggers — startup, each conversation turn (log watcher), the
-//! "Refresh now" item, the soonest limit reset, and a steady heartbeat — so the
-//! bar stays current whether or not a conversation is active.
+//! Background polling: a worker thread refreshes `AppState`. It fetches only
+//! when there's a reason to — startup, each conversation turn (log watcher), the
+//! "Refresh now" item, and the soonest limit reset — with no steady heartbeat.
+//! A failed fetch retries on a bounded interval so the bar recovers on its own.
+//! Every fetch is throttled to `MIN_FETCH_GAP` apart so overlapping triggers
+//! can't hammer the endpoint into a 429.
 //!
 //! The UI (main thread) only ever reads the shared state.
 
@@ -17,15 +19,17 @@ use crate::watch;
 
 /// Coalesce the burst of log writes within a single turn before fetching.
 const DEBOUNCE: Duration = Duration::from_millis(800);
-/// Steady refresh cadence even when nothing else triggers.
-const HEARTBEAT: Duration = Duration::from_secs(60);
 /// Wait this long past a reset so the server has rolled the window over.
 const RESET_MARGIN: Duration = Duration::from_secs(3);
 /// Floor on the computed wait, to avoid a busy loop right after a reset.
 const MIN_WAIT: Duration = Duration::from_secs(2);
-/// Minimum gap between trigger-driven fetches (menu opens, turn events), so
-/// rapid pokes coalesce instead of hammering the endpoint.
-const MIN_TRIGGER_GAP: Duration = Duration::from_secs(5);
+/// Minimum gap between *any* two fetches (turn, reset, click, retry), so
+/// overlapping triggers coalesce instead of hammering the endpoint into a 429.
+const MIN_FETCH_GAP: Duration = Duration::from_secs(5);
+/// Bounded retry after a failed fetch (or a server rollover that lags its
+/// `resets_at`), so the bar recovers on its own without a turn or a click. This
+/// is recovery only — there is no steady heartbeat when fetches succeed.
+const RETRY: Duration = Duration::from_secs(30);
 
 /// Handle to poke the poller into fetching now (e.g. the "Refresh now" item).
 #[derive(Clone)]
@@ -87,8 +91,19 @@ pub fn spawn<P: Provider + Send + 'static>(provider: P) -> (Shared, Trigger) {
     let worker = Arc::clone(&shared);
     thread::spawn(move || {
         let _watcher = watcher; // keep the FS watcher alive for the thread's life
+        let mut last_fetch: Option<Instant> = None;
         loop {
-            let last_fetch = Instant::now();
+            // Throttle: never fetch more often than MIN_FETCH_GAP, whatever woke
+            // us (turn, reset, Refresh now, retry), so overlapping triggers can't
+            // trip the endpoint's 429.
+            if let Some(prev) = last_fetch {
+                let since = prev.elapsed();
+                if since < MIN_FETCH_GAP {
+                    thread::sleep(MIN_FETCH_GAP - since);
+                    while rx.try_recv().is_ok() {} // coalesce pokes during the gap
+                }
+            }
+            last_fetch = Some(Instant::now());
             // Mark in-flight so the UI spins while the (possibly slow) network
             // fetch runs; apply() clears it. Read directly, not version-gated.
             worker.lock().expect("state lock").refreshing = true;
@@ -98,25 +113,20 @@ pub fn spawn<P: Provider + Send + 'static>(provider: P) -> (Shared, Trigger) {
                 apply(&mut state, result);
                 next_wait(&state)
             };
-            // Wake on the soonest of: a trigger (turn / menu), reset, heartbeat.
+            // Wake on the soonest of: a trigger (turn / Refresh now), the next
+            // reset boundary, or the recovery retry. No steady heartbeat.
             match rx.recv_timeout(wait) {
                 Ok(()) => {
                     // Spin right away so a manual "Refresh now" gives instant
-                    // feedback through the debounce/rate-limit wait below — not
-                    // only once the GET starts. apply() clears it.
+                    // feedback through the wait below, and let a turn's burst of
+                    // log writes settle before looping back to fetch.
                     worker.lock().expect("state lock").refreshing = true;
                     thread::sleep(DEBOUNCE);
                     while rx.try_recv().is_ok() {} // drain the rest of the burst
-                    // Rate-limit trigger-driven fetches.
-                    let since = last_fetch.elapsed();
-                    if since < MIN_TRIGGER_GAP {
-                        thread::sleep(MIN_TRIGGER_GAP - since);
-                        while rx.try_recv().is_ok() {} // drain pokes during the gap
-                    }
                 }
                 Err(RecvTimeoutError::Timeout) => {}
-                // Sender dropped (never happens; we hold a clone) — keep going.
-                Err(RecvTimeoutError::Disconnected) => thread::sleep(wait),
+                // Sender dropped (never happens; we hold a clone) — stop the loop.
+                Err(RecvTimeoutError::Disconnected) => return,
             }
         }
     });
@@ -124,13 +134,14 @@ pub fn spawn<P: Provider + Send + 'static>(provider: P) -> (Shared, Trigger) {
     (shared, Trigger(tx))
 }
 
-/// Time until the next fetch: the soonest limit reset (plus margin) if that is
-/// sooner than the heartbeat, otherwise the heartbeat. Floored at `MIN_WAIT`.
+/// Time until the next fetch. On success, sleep until the soonest limit reset
+/// (plus margin) to catch the rollover — there is no steady heartbeat. On
+/// failure (or no data yet) retry on a bounded interval so the bar recovers.
 ///
 /// A reset that's already in the past gives no useful wake-up: the server's
 /// rollover can lag its own `resets_at`, and a 429 keeps the stale (past-reset)
-/// snapshot — so anchoring on it would busy-poll at the margin and hammer the
-/// endpoint into a sustained 429. In that case we fall back to the heartbeat.
+/// snapshot — so anchoring on it would busy-poll at the margin. In that case we
+/// fall back to the bounded retry instead.
 fn next_wait(state: &AppState) -> Duration {
     let margin = chrono::Duration::from_std(RESET_MARGIN).unwrap_or_default();
     let until_reset = state
@@ -138,9 +149,12 @@ fn next_wait(state: &AppState) -> Duration {
         .as_ref()
         .and_then(|s| s.windows.iter().map(|w| w.resets_at).min())
         .and_then(|reset| (reset - Local::now() + margin).to_std().ok());
-    until_reset
-        .map_or(HEARTBEAT, |r| r.min(HEARTBEAT))
-        .max(MIN_WAIT)
+    match state.status {
+        // Healthy: wait out the soonest reset; an elapsed reset retries instead.
+        Status::Ok => until_reset.unwrap_or(RETRY).max(MIN_WAIT),
+        // Failed / no data yet: bounded recovery retry (not a heartbeat).
+        _ => RETRY,
+    }
 }
 
 #[cfg(test)]
@@ -169,41 +183,52 @@ mod tests {
     }
 
     #[test]
-    fn no_snapshot_uses_heartbeat() {
+    fn no_data_uses_retry() {
+        // No snapshot yet (a failed startup fetch) -> bounded recovery retry.
         let state = AppState {
             snapshot: None,
-            status: Status::Loading,
+            status: Status::Error,
             message: None,
             updated_at: None,
             checked_at: None,
             refreshing: false,
             version: 0,
         };
-        assert_eq!(next_wait(&state), HEARTBEAT);
+        assert_eq!(next_wait(&state), RETRY);
     }
 
     #[test]
-    fn distant_reset_uses_heartbeat() {
-        // Both windows reset hours away -> capped at the heartbeat.
+    fn healthy_waits_until_reset() {
+        // Healthy with the soonest reset hours away -> wait that long, no cap
+        // (no heartbeat).
         let state = state_with_resets(&[7200, 600000]);
-        assert_eq!(next_wait(&state), HEARTBEAT);
+        let wait = next_wait(&state);
+        assert!(wait > Duration::from_secs(7100) && wait <= Duration::from_secs(7205));
     }
 
     #[test]
     fn soon_reset_wakes_at_boundary() {
-        // Soonest reset in ~10s -> wake ~10s + margin, before the heartbeat.
+        // Soonest reset in ~10s -> wake ~10s + margin.
         let state = state_with_resets(&[10, 7200]);
         let wait = next_wait(&state);
         assert!(wait > Duration::from_secs(10) && wait <= Duration::from_secs(14));
     }
 
     #[test]
-    fn passed_reset_falls_back_to_heartbeat() {
+    fn passed_reset_falls_back_to_retry() {
         // Reset already elapsed (the server's rollover can lag its resets_at) ->
-        // don't busy-poll at the margin; wait out the heartbeat so a 429 can't
-        // get sustained.
+        // don't busy-poll at the margin; use the bounded retry instead.
         let state = state_with_resets(&[-5]);
-        assert_eq!(next_wait(&state), HEARTBEAT);
+        assert_eq!(next_wait(&state), RETRY);
+    }
+
+    #[test]
+    fn stale_uses_retry() {
+        // A failed fetch that kept a prior snapshot still retries on the bounded
+        // interval, not at the (stale) reset boundary.
+        let mut state = state_with_resets(&[10]);
+        state.status = Status::Stale;
+        assert_eq!(next_wait(&state), RETRY);
     }
 }
 
@@ -229,7 +254,9 @@ fn apply(state: &mut AppState, result: Result<UsageSnapshot, FetchError>) {
             } else {
                 Status::Error
             };
-            state.message = Some(format!("{e}"));
+            // `{e:#}` includes the cause chain (e.g. "usage request failed: http
+            // status: 429") so the dropdown can show why a refresh failed.
+            state.message = Some(format!("{e:#}"));
         }
     }
 }

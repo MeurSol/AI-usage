@@ -240,16 +240,22 @@ fn last_refresh_line(state: &AppState) -> String {
         match state.status {
             Status::Loading => "checking…".into(),
             Status::Ok => "OK".into(),
-            Status::AuthExpired => "auth expired".into(),
+            Status::AuthExpired => "auth expired — re-login in Claude Code".into(),
+            // Always surface the reason a refresh failed; "(kept last)" notes the
+            // bar is still showing the previous good snapshot.
             Status::Stale | Status::Error => {
-                let msg = state.message.as_deref().unwrap_or_default();
-                if msg.contains("429") {
-                    "rate-limited (429), kept last".into()
-                } else if state.status == Status::Stale {
-                    "failed, kept last".into()
+                let msg = state.message.as_deref().unwrap_or("unknown error");
+                let reason = if msg.contains("429") {
+                    "rate-limited (429)"
                 } else {
-                    format!("failed: {msg}")
-                }
+                    msg
+                };
+                let kept = if state.status == Status::Stale {
+                    " (kept last)"
+                } else {
+                    ""
+                };
+                format!("failed — {reason}{kept}")
             }
         }
     };

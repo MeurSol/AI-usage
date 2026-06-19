@@ -44,19 +44,23 @@ indicator in the gauge slot (`gauge::spinner`).
 
 ### Refresh timing (`poller.rs`)
 
-The worker fetches, then sleeps until the soonest of several triggers
-(`next_wait` picks the interval):
+The worker fetches only when there's a reason to — **there is no steady
+heartbeat**. After each fetch it sleeps until the soonest of (`next_wait` picks
+the interval):
 
 - **Turn event** — `watch.rs` signals on `*.jsonl` writes under
   `~/.claude/projects` (a conversation turn); 800ms debounce.
 - **Manual refresh** — the **Refresh now** menu item fires a `Trigger`. This is
   the only user-driven query; opening the dropdown no longer fetches.
-- **Reset boundary** — wakes ~3s after the soonest window's `resets_at`, so the
-  bar updates at a reset even with no conversation active.
-- **Heartbeat** — 60s ceiling so it stays current regardless.
+- **Reset boundary** — on success, wakes ~3s after the soonest window's
+  `resets_at`, so the bar updates at a reset even with no conversation active.
+- **Recovery retry** — only after a *failed* fetch (or a server rollover that
+  lags its `resets_at`): retries every `RETRY` (30s) until it succeeds. This is
+  recovery, not a heartbeat — successful idle states don't poll.
 
-Trigger-driven fetches are rate-limited to one per `MIN_TRIGGER_GAP` (5s) so
-rapid Refresh-now clicks / turn bursts coalesce and don't hit the endpoint's 429.
+Every fetch — whatever woke it (turn, reset, click, retry) — is throttled to at
+least `MIN_FETCH_GAP` (5s) since the previous one, so overlapping triggers
+coalesce and don't trip the endpoint's 429.
 
 ## Data source
 
