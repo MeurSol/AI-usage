@@ -41,11 +41,20 @@ define_class!(
             self.refresh();
         }
 
-        // "Refresh now" menu item: the only user-driven query. Fires a trigger
-        // so the poller runs a real fetch through its normal rate-limited path
-        // (i.e. it counts as one real query). Opening the menu no longer fetches.
+        // "Refresh now" menu item: the only user-driven query. Reflect the click
+        // immediately — stamp the action time and raise the spinner — so the
+        // "Last refresh" line and gauge move the instant you click, regardless of
+        // whether the fetch is debounced, rate-limited, or fails. Then fire the
+        // trigger so the poller runs a real fetch; apply() overwrites these with
+        // the real outcome when it lands.
         #[unsafe(method(refreshNow:))]
         fn refresh_now(&self, _sender: Option<&NSMenuItem>) {
+            {
+                let mut state = self.ivars().shared.lock().expect("state lock");
+                state.checked_at = Some(Local::now());
+                state.refreshing = true;
+                state.version = state.version.wrapping_add(1);
+            }
             self.ivars().trigger.fire();
         }
     }
@@ -56,40 +65,50 @@ define_class!(
 impl Controller {
     fn refresh(&self) {
         let mtm = MainThreadMarker::from(self);
-        // Under one lock, decide what to draw. A fetch in flight => animate the
-        // spinner (not version-gated, so the frame advances); otherwise redraw
-        // only when the state version changed, keeping idle ticks cheap.
-        let draw = {
+        // Snapshot under one lock: whether a fetch is in flight, and (only when
+        // the state version changed) a fresh render. The gauge slot spins while
+        // fetching; the title + dropdown rebuild whenever the version changed —
+        // including the version bump from a Refresh-now click — so the click's
+        // result shows even while the spinner is still turning.
+        let (refreshing, redraw) = {
             let state = self.ivars().shared.lock().expect("state lock");
-            if state.refreshing {
+            let redraw = if self.ivars().last_version.get() == Some(state.version) {
                 None
-            } else if self.ivars().last_version.get() == Some(state.version) {
-                return;
             } else {
                 self.ivars().last_version.set(Some(state.version));
                 Some(render(&state))
-            }
+            };
+            (state.refreshing, redraw)
         };
 
-        let Some((session_frac, title, lines)) = draw else {
-            // Spinner frame: spin the gauge slot, leave the numbers as they are.
-            let phase = self.ivars().spin_phase.get() + 0.45;
-            self.ivars().spin_phase.set(phase);
-            if let Some(button) = self.ivars().item.button(mtm) {
+        // Idle tick: nothing in flight and nothing new to draw — bail cheaply.
+        if !refreshing && redraw.is_none() {
+            return;
+        }
+
+        // Gauge slot: spinner while fetching, otherwise the rendered fraction.
+        if let Some(button) = self.ivars().item.button(mtm) {
+            if refreshing {
+                let phase = self.ivars().spin_phase.get() + 0.45;
+                self.ivars().spin_phase.set(phase);
                 button.setImage(Some(&gauge::spinner(phase)));
                 button.setImagePosition(NSCellImagePosition::ImageLeft);
+            } else if let Some((session_frac, _, _)) = &redraw {
+                match session_frac {
+                    Some(frac) => {
+                        button.setImage(Some(&gauge::session_gauge(frac / 100.0)));
+                        button.setImagePosition(NSCellImagePosition::ImageLeft);
+                    }
+                    None => button.setImage(None),
+                }
             }
+        }
+
+        // Title + dropdown: only when the version changed.
+        let Some((_, title, lines)) = redraw else {
             return;
         };
-
         if let Some(button) = self.ivars().item.button(mtm) {
-            match session_frac {
-                Some(frac) => {
-                    button.setImage(Some(&gauge::session_gauge(frac / 100.0)));
-                    button.setImagePosition(NSCellImagePosition::ImageLeft);
-                }
-                None => button.setImage(None),
-            }
             button.setTitle(&NSString::from_str(&title));
         }
 
@@ -165,9 +184,10 @@ pub fn install(mtm: MainThreadMarker, shared: Shared, trigger: Trigger) -> Retai
 }
 
 /// Produce the session gauge fraction (session %, `None` when no data), the bar
-/// title, and the dropdown lines for the current state.
+/// title, and the dropdown lines for the current state. The dropdown always ends
+/// with a "Last refresh" line so the result of every fetch is visible.
 fn render(state: &AppState) -> (Option<f64>, String, Vec<String>) {
-    match &state.snapshot {
+    let (session, title, mut lines) = match &state.snapshot {
         Some(snap) => {
             let pcts: Vec<String> = snap
                 .windows
@@ -179,7 +199,7 @@ fn render(state: &AppState) -> (Option<f64>, String, Vec<String>) {
                 _ => pcts.join(" / "),
             };
 
-            let mut lines: Vec<String> = snap
+            let lines: Vec<String> = snap
                 .windows
                 .iter()
                 .map(|w| {
@@ -191,9 +211,6 @@ fn render(state: &AppState) -> (Option<f64>, String, Vec<String>) {
                     )
                 })
                 .collect();
-            if state.status == Status::Stale {
-                lines.push("⚠︎ offline — showing last update".into());
-            }
             let session = snap.windows.first().map(|w| w.utilization);
             (session, title, lines)
         }
@@ -203,17 +220,40 @@ fn render(state: &AppState) -> (Option<f64>, String, Vec<String>) {
                 "auth?".into(),
                 vec!["Auth expired — re-login in Claude Code".into()],
             ),
-            Status::Error => (
-                None,
-                "—".into(),
-                vec![format!(
-                    "Error: {}",
-                    state.message.clone().unwrap_or_default()
-                )],
-            ),
+            Status::Error => (None, "—".into(), Vec::new()),
             _ => (None, "…".into(), vec!["Loading…".into()]),
         },
-    }
+    };
+    lines.push(last_refresh_line(state));
+    (session, title, lines)
+}
+
+/// The "Last refresh" dropdown line: when the last fetch attempt completed and
+/// how it went, so a Refresh-now click always shows a concrete result.
+fn last_refresh_line(state: &AppState) -> String {
+    let when = state
+        .checked_at
+        .map_or_else(|| "—".into(), |t| t.format("%H:%M:%S").to_string());
+    let outcome = if state.refreshing {
+        "checking…".into()
+    } else {
+        match state.status {
+            Status::Loading => "checking…".into(),
+            Status::Ok => "OK".into(),
+            Status::AuthExpired => "auth expired".into(),
+            Status::Stale | Status::Error => {
+                let msg = state.message.as_deref().unwrap_or_default();
+                if msg.contains("429") {
+                    "rate-limited (429), kept last".into()
+                } else if state.status == Status::Stale {
+                    "failed, kept last".into()
+                } else {
+                    format!("failed: {msg}")
+                }
+            }
+        }
+    };
+    format!("Last refresh {when} · {outcome}")
 }
 
 /// Time-of-day if the reset is today, otherwise an abbreviated date + time.

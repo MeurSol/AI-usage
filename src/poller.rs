@@ -1,6 +1,6 @@
 //! Background polling: a worker thread refreshes `AppState`. It fetches on
-//! several triggers — startup, each conversation turn (log watcher), a manual
-//! poke (menu open), the soonest limit reset, and a steady heartbeat — so the
+//! several triggers — startup, each conversation turn (log watcher), the
+//! "Refresh now" item, the soonest limit reset, and a steady heartbeat — so the
 //! bar stays current whether or not a conversation is active.
 //!
 //! The UI (main thread) only ever reads the shared state.
@@ -27,7 +27,7 @@ const MIN_WAIT: Duration = Duration::from_secs(2);
 /// rapid pokes coalesce instead of hammering the endpoint.
 const MIN_TRIGGER_GAP: Duration = Duration::from_secs(5);
 
-/// Handle to poke the poller into fetching now (e.g. when the menu opens).
+/// Handle to poke the poller into fetching now (e.g. the "Refresh now" item).
 #[derive(Clone)]
 pub struct Trigger(Sender<()>);
 
@@ -57,6 +57,9 @@ pub struct AppState {
     /// Human-readable detail for the error/stale case.
     pub message: Option<String>,
     pub updated_at: Option<DateTime<Local>>,
+    /// When the last fetch attempt completed, whatever its outcome — drives the
+    /// dropdown's "Last refresh" line so a click's result is always visible.
+    pub checked_at: Option<DateTime<Local>>,
     /// True while a fetch is in flight, so the UI can show a spinner.
     pub refreshing: bool,
     /// Bumped on every state update so the UI can skip redundant redraws.
@@ -73,6 +76,7 @@ pub fn spawn<P: Provider + Send + 'static>(provider: P) -> (Shared, Trigger) {
         status: Status::Loading,
         message: None,
         updated_at: None,
+        checked_at: None,
         refreshing: false,
         version: 0,
     }));
@@ -97,6 +101,10 @@ pub fn spawn<P: Provider + Send + 'static>(provider: P) -> (Shared, Trigger) {
             // Wake on the soonest of: a trigger (turn / menu), reset, heartbeat.
             match rx.recv_timeout(wait) {
                 Ok(()) => {
+                    // Spin right away so a manual "Refresh now" gives instant
+                    // feedback through the debounce/rate-limit wait below — not
+                    // only once the GET starts. apply() clears it.
+                    worker.lock().expect("state lock").refreshing = true;
                     thread::sleep(DEBOUNCE);
                     while rx.try_recv().is_ok() {} // drain the rest of the burst
                     // Rate-limit trigger-driven fetches.
@@ -154,6 +162,7 @@ mod tests {
             status: Status::Ok,
             message: None,
             updated_at: None,
+            checked_at: None,
             refreshing: false,
             version: 0,
         }
@@ -166,6 +175,7 @@ mod tests {
             status: Status::Loading,
             message: None,
             updated_at: None,
+            checked_at: None,
             refreshing: false,
             version: 0,
         };
@@ -200,6 +210,7 @@ mod tests {
 /// Fold one fetch result into the state, preserving the last good snapshot.
 fn apply(state: &mut AppState, result: Result<UsageSnapshot, FetchError>) {
     state.refreshing = false;
+    state.checked_at = Some(Local::now());
     state.version = state.version.wrapping_add(1);
     match result {
         Ok(snapshot) => {

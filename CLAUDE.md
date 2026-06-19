@@ -3,7 +3,8 @@
 A macOS menu bar app (Rust) that shows Claude usage in the system status bar:
 the current **session (5h)** and **weekly (7d)** utilization, plus when each
 limit resets. The bar shows `session% / weekly%` (e.g. `27% / 18%`); the
-dropdown lists each window with its reset time, and a Quit item.
+dropdown lists each window with its reset time, a **Last refresh** line (time +
+outcome of the most recent fetch), a **Refresh now** item, and a Quit item.
 
 ## Architecture
 

@@ -1,6 +1,8 @@
 //! Claude provider: reads the OAuth token from the Keychain and queries the
 //! same endpoint Claude Code's `/usage` uses.
 
+use std::time::Duration;
+
 use anyhow::{Context, Result};
 use chrono::{DateTime, Local};
 use serde::Deserialize;
@@ -86,8 +88,11 @@ impl ClaudeProvider {
         // api.anthropic.com is reached via an HTTP proxy in some regions. Use
         // the HTTP-scheme proxy from the environment; we intentionally ignore
         // ALL_PROXY (often socks5, which ureq can't use without a feature).
+        // Cap the whole request so a stalled proxy connection can't wedge the
+        // worker (which would freeze the spinner and stop all refreshes).
         let config = ureq::Agent::config_builder()
             .proxy(http_proxy())
+            .timeout_global(Some(Duration::from_secs(20)))
             .build();
         let agent = ureq::Agent::new_with_config(config);
         ClaudeProvider {
