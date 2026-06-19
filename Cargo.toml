@@ -21,6 +21,8 @@ objc2-foundation = { version = "0.3", features = [
     "NSTimer",
     "NSRunLoop",
     "NSThread",
+    "NSAttributedString",
+    "NSRange",
 ] }
 objc2-app-kit = { version = "0.3", features = [
     "NSApplication",
@@ -37,6 +39,9 @@ objc2-app-kit = { version = "0.3", features = [
     "NSImage",
     "NSBezierPath",
     "NSColor",
+    "NSAttributedString",
+    "NSFont",
+    "NSText",
     "block2",
 ] }
 
