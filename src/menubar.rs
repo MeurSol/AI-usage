@@ -129,7 +129,10 @@ impl Controller {
 
     /// Update the persistent dropdown rows in place from a fresh render.
     fn apply_view(&self, view: &View) {
-        let label = NSColor::labelColor();
+        // High-contrast primary text everywhere that matters — secondary/tinted
+        // text washes out against the menu's translucent material. Hierarchy
+        // comes from weight/size, not colour.
+        let primary = NSColor::labelColor();
         let secondary = NSColor::secondaryLabelColor();
         let body = NSFont::menuFontOfSize(13.0);
         let bold = NSFont::boldSystemFontOfSize(13.0);
@@ -138,14 +141,14 @@ impl Controller {
         let set_usage = |item: &NSMenuItem, row: &Row| match row {
             Row::Usage { label: name, pct, reset } => {
                 let title = attributed(vec![
-                    (format!("{name}    "), label.clone(), body.clone()),
-                    (format!("{pct:.0}%"), gauge::level_color(pct / 100.0), bold.clone()),
-                    (format!("    resets {reset}"), secondary.clone(), small.clone()),
+                    (format!("{name}   "), primary.clone(), body.clone()),
+                    (format!("{pct:.0}%   "), primary.clone(), bold.clone()),
+                    (format!("resets {reset}"), secondary.clone(), small.clone()),
                 ]);
                 item.setAttributedTitle(Some(&title));
             }
             Row::Note(text) => {
-                let title = attributed(vec![(text.clone(), secondary.clone(), body.clone())]);
+                let title = attributed(vec![(text.clone(), primary.clone(), body.clone())]);
                 item.setAttributedTitle(Some(&title));
             }
         };
@@ -196,16 +199,7 @@ pub fn install(mtm: MainThreadMarker, shared: Shared, trigger: Trigger) -> Retai
     // (auto-enable greys out actionless items).
     menu.setAutoenablesItems(false);
 
-    let header = NSMenuItem::new(mtm);
-    header.setAttributedTitle(Some(&attributed(vec![(
-        "Claude usage".into(),
-        NSColor::secondaryLabelColor(),
-        NSFont::systemFontOfSize(11.0),
-    )])));
-    header.setEnabled(false);
-    menu.addItem(&header);
-
-    session_item.setEnabled(true); // keep the colored percentage
+    session_item.setEnabled(true); // keep full-contrast attributed text
     weekly_item.setEnabled(true);
     menu.addItem(&session_item);
     menu.addItem(&weekly_item);
@@ -216,10 +210,12 @@ pub fn install(mtm: MainThreadMarker, shared: Shared, trigger: Trigger) -> Retai
     menu.addItem(&NSMenuItem::separatorItem(mtm));
 
     // Refresh as a button view so clicking it keeps the menu open (a plain item
-    // would dismiss it before the live result could show).
+    // would dismiss it before the live result could show). A borderless button's
+    // plain title renders dimmed against the menu material, so set an explicit
+    // full-opacity attributed title; the leading pad aligns it with the rows.
     let refresh_button = unsafe {
         NSButton::buttonWithTitle_target_action(
-            &NSString::from_str("\u{21bb}   Refresh now"),
+            &NSString::from_str("Refresh now"),
             Some(&controller),
             Some(sel!(refreshNow:)),
             mtm,
@@ -227,10 +223,14 @@ pub fn install(mtm: MainThreadMarker, shared: Shared, trigger: Trigger) -> Retai
     };
     refresh_button.setBordered(false);
     refresh_button.setAlignment(NSTextAlignment::Left);
-    refresh_button.setFont(Some(&NSFont::menuFontOfSize(13.0)));
+    refresh_button.setAttributedTitle(&attributed(vec![(
+        "     Refresh now".into(),
+        NSColor::labelColor(),
+        NSFont::menuFontOfSize(13.0),
+    )]));
     refresh_button.setFrame(NSRect::new(
         NSPoint::new(0.0, 0.0),
-        NSSize::new(220.0, 22.0),
+        NSSize::new(240.0, 22.0),
     ));
     let refresh_item = NSMenuItem::new(mtm);
     refresh_item.setView(Some(&refresh_button));
@@ -341,22 +341,17 @@ fn last_refresh_line(state: &AppState) -> String {
         match state.status {
             Status::Loading => "checking…".into(),
             Status::Ok => "OK".into(),
-            Status::AuthExpired => "auth expired — re-login in Claude Code".into(),
-            // Always surface the reason a refresh failed; "(kept last)" notes the
-            // bar is still showing the previous good snapshot.
+            Status::AuthExpired => "auth expired".into(),
+            // Surface the failure reason, but keep it short (it sets the menu
+            // width). 429 is the common case; the stale "·" in the bar already
+            // signals we're showing the previous snapshot.
             Status::Stale | Status::Error => {
                 let msg = state.message.as_deref().unwrap_or("unknown error");
-                let reason = if msg.contains("429") {
-                    "rate-limited (429)"
+                if msg.contains("429") {
+                    "rate-limited (429)".into()
                 } else {
-                    msg
-                };
-                let kept = if state.status == Status::Stale {
-                    " (kept last)"
-                } else {
-                    ""
-                };
-                format!("failed — {reason}{kept}")
+                    format!("failed: {msg}")
+                }
             }
         }
     };
