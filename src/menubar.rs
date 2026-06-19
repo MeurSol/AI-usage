@@ -3,11 +3,12 @@
 //! The dropdown is built once and its rows are updated *in place* every tick, so
 //! an already-open menu reflects new fetch results live (the timer runs in the
 //! common run-loop modes so it keeps firing while the menu is tracking, and the
-//! "Refresh now" row is a button view so clicking it doesn't dismiss the menu).
-//! Rows use attributed titles — colored percentages, secondary-gray reset times
-//! — for a tidier look. A short-interval NSTimer animates the in-flight spinner
-//! and otherwise redraws only when the state's `version` changed. All AppKit
-//! access stays on the main thread.
+//! "Refresh now" row is a custom view — `RefreshRow` — that handles its own
+//! click so the menu stays open and draws a native hover highlight). Rows use
+//! attributed titles at a single size for a tidy, readable look. A
+//! short-interval NSTimer animates the in-flight spinner and otherwise redraws
+//! only when the state's `version` changed. All AppKit access is on the main
+//! thread.
 
 use std::cell::Cell;
 
@@ -18,9 +19,10 @@ use objc2::{
     define_class, msg_send, sel, AllocAnyThread, DefinedClass, MainThreadMarker, MainThreadOnly,
 };
 use objc2_app_kit::{
-    NSButton, NSCellImagePosition, NSColor, NSFont, NSFontAttributeName,
-    NSForegroundColorAttributeName, NSMenu, NSMenuItem, NSStatusBar, NSStatusItem, NSTextAlignment,
-    NSVariableStatusItemLength,
+    NSAttributedStringNSStringDrawing, NSAutoresizingMaskOptions, NSBezierPath,
+    NSCellImagePosition, NSColor, NSEvent, NSFont, NSFontAttributeName,
+    NSForegroundColorAttributeName, NSMenu, NSMenuItem, NSStatusBar, NSStatusItem, NSTrackingArea,
+    NSTrackingAreaOptions, NSVariableStatusItemLength, NSView,
 };
 use objc2_foundation::{
     NSAttributedString, NSMutableAttributedString, NSPoint, NSRange, NSRect, NSRunLoop,
@@ -30,9 +32,11 @@ use objc2_foundation::{
 use crate::gauge;
 use crate::poller::{AppState, Shared, Status, Trigger};
 
+/// Point size used for every row, so the dropdown reads as one consistent block.
+const FONT_SIZE: f64 = 13.0;
+
 pub struct Ivars {
     shared: Shared,
-    trigger: Trigger,
     item: Retained<NSStatusItem>,
     /// Persistent dropdown rows, updated in place so an open menu stays live.
     session_item: Retained<NSMenuItem>,
@@ -56,26 +60,96 @@ define_class!(
         fn tick(&self, _timer: Option<&NSTimer>) {
             self.refresh();
         }
-
-        // "Refresh now" button row: the only user-driven query. Reflect the click
-        // immediately — stamp the action time and raise the spinner — so the row
-        // and gauge move at once, even if the fetch is debounced, rate-limited, or
-        // fails. The row is a button view so the menu stays open and the live
-        // in-place update is visible; apply() overwrites with the real outcome.
-        #[unsafe(method(refreshNow:))]
-        fn refresh_now(&self, _sender: Option<&NSObject>) {
-            {
-                let mut state = self.ivars().shared.lock().expect("state lock");
-                state.checked_at = Some(Local::now());
-                state.refreshing = true;
-                state.version = state.version.wrapping_add(1);
-            }
-            self.ivars().trigger.fire();
-        }
     }
 
     unsafe impl NSObjectProtocol for Controller {}
 );
+
+/// The "Refresh now" row: a custom view so clicking it keeps the menu open (a
+/// plain menu item would dismiss it before the live result could show) and so we
+/// can draw the native hover highlight that an actionless view wouldn't get.
+struct RefreshRowIvars {
+    shared: Shared,
+    trigger: Trigger,
+    hovered: Cell<bool>,
+}
+
+define_class!(
+    #[unsafe(super(NSView))]
+    #[thread_kind = MainThreadOnly]
+    #[name = "AIUsageRefreshRow"]
+    #[ivars = RefreshRowIvars]
+    struct RefreshRow;
+
+    impl RefreshRow {
+        #[unsafe(method(drawRect:))]
+        fn draw_rect(&self, _dirty: NSRect) {
+            let bounds = self.bounds();
+            let hovered = self.ivars().hovered.get();
+            if hovered {
+                // The same rounded accent fill macOS uses for a hovered item.
+                let rect = NSRect::new(
+                    NSPoint::new(5.0, 1.0),
+                    NSSize::new(
+                        (bounds.size.width - 10.0).max(0.0),
+                        (bounds.size.height - 2.0).max(0.0),
+                    ),
+                );
+                NSColor::selectedContentBackgroundColor().setFill();
+                NSBezierPath::bezierPathWithRoundedRect_xRadius_yRadius(rect, 5.0, 5.0).fill();
+            }
+            let color = if hovered {
+                NSColor::selectedMenuItemTextColor()
+            } else {
+                NSColor::labelColor()
+            };
+            let title = attributed(vec![(
+                "Refresh now".into(),
+                color,
+                NSFont::menuFontOfSize(FONT_SIZE),
+            )]);
+            let size = title.size();
+            // Indent to line up with the menu item rows; vertically centered.
+            let y = (bounds.size.height - size.height) / 2.0;
+            title.drawAtPoint(NSPoint::new(20.0, y));
+        }
+
+        #[unsafe(method(mouseEntered:))]
+        fn mouse_entered(&self, _event: &NSEvent) {
+            self.ivars().hovered.set(true);
+            self.setNeedsDisplay(true);
+        }
+
+        #[unsafe(method(mouseExited:))]
+        fn mouse_exited(&self, _event: &NSEvent) {
+            self.ivars().hovered.set(false);
+            self.setNeedsDisplay(true);
+        }
+
+        // Claim the mouse session so mouseUp is delivered here.
+        #[unsafe(method(mouseDown:))]
+        fn mouse_down(&self, _event: &NSEvent) {}
+
+        #[unsafe(method(mouseUp:))]
+        fn mouse_up(&self, _event: &NSEvent) {
+            request_refresh(&self.ivars().shared, &self.ivars().trigger);
+        }
+    }
+);
+
+/// Reflect a refresh request immediately — stamp the action time and raise the
+/// spinner — then fire the trigger so the poller runs a real fetch. The "Last
+/// refresh" row and gauge move at once, even if the fetch is debounced,
+/// rate-limited, or fails; apply() overwrites with the real outcome.
+fn request_refresh(shared: &Shared, trigger: &Trigger) {
+    {
+        let mut state = shared.lock().expect("state lock");
+        state.checked_at = Some(Local::now());
+        state.refreshing = true;
+        state.version = state.version.wrapping_add(1);
+    }
+    trigger.fire();
+}
 
 impl Controller {
     fn refresh(&self) {
@@ -83,7 +157,7 @@ impl Controller {
         // Snapshot under one lock: whether a fetch is in flight, and (only when
         // the version changed) a fresh render. The gauge slot spins while
         // fetching; rows rebuild whenever the version changed — including the bump
-        // from a Refresh-now click — so the click's result shows while spinning.
+        // from a refresh click — so the click's result shows while spinning.
         let (refreshing, view) = {
             let state = self.ivars().shared.lock().expect("state lock");
             let view = if self.ivars().last_version.get() == Some(state.version) {
@@ -130,20 +204,19 @@ impl Controller {
     /// Update the persistent dropdown rows in place from a fresh render.
     fn apply_view(&self, view: &View) {
         // High-contrast primary text everywhere that matters — secondary/tinted
-        // text washes out against the menu's translucent material. Hierarchy
-        // comes from weight/size, not colour.
+        // text washes out against the menu's translucent material. One font size
+        // throughout; hierarchy comes from weight, not size or colour.
         let primary = NSColor::labelColor();
         let secondary = NSColor::secondaryLabelColor();
-        let body = NSFont::menuFontOfSize(13.0);
-        let bold = NSFont::boldSystemFontOfSize(13.0);
-        let small = NSFont::systemFontOfSize(11.0);
+        let body = NSFont::menuFontOfSize(FONT_SIZE);
+        let bold = NSFont::boldSystemFontOfSize(FONT_SIZE);
 
         let set_usage = |item: &NSMenuItem, row: &Row| match row {
             Row::Usage { label: name, pct, reset } => {
                 let title = attributed(vec![
                     (format!("{name}   "), primary.clone(), body.clone()),
                     (format!("{pct:.0}%   "), primary.clone(), bold.clone()),
-                    (format!("resets {reset}"), secondary.clone(), small.clone()),
+                    (format!("resets {reset}"), secondary.clone(), body.clone()),
                 ]);
                 item.setAttributedTitle(Some(&title));
             }
@@ -162,7 +235,7 @@ impl Controller {
             None => self.ivars().weekly_item.setHidden(true),
         }
 
-        let last = attributed(vec![(view.last_refresh.clone(), secondary, small)]);
+        let last = attributed(vec![(view.last_refresh.clone(), secondary, body)]);
         self.ivars().last_refresh_item.setAttributedTitle(Some(&last));
     }
 }
@@ -181,8 +254,7 @@ pub fn install(mtm: MainThreadMarker, shared: Shared, trigger: Trigger) -> Retai
 
     let controller = {
         let this = mtm.alloc::<Controller>().set_ivars(Ivars {
-            shared,
-            trigger,
+            shared: shared.clone(),
             item: item.clone(),
             session_item: session_item.clone(),
             weekly_item: weekly_item.clone(),
@@ -195,7 +267,7 @@ pub fn install(mtm: MainThreadMarker, shared: Shared, trigger: Trigger) -> Retai
     };
 
     let menu = NSMenu::new(mtm);
-    // We manage enablement ourselves so info rows keep their attributed colors
+    // We manage enablement ourselves so info rows keep their attributed colours
     // (auto-enable greys out actionless items).
     menu.setAutoenablesItems(false);
 
@@ -209,31 +281,36 @@ pub fn install(mtm: MainThreadMarker, shared: Shared, trigger: Trigger) -> Retai
     menu.addItem(&last_refresh_item);
     menu.addItem(&NSMenuItem::separatorItem(mtm));
 
-    // Refresh as a button view so clicking it keeps the menu open (a plain item
-    // would dismiss it before the live result could show). A borderless button's
-    // plain title renders dimmed against the menu material, so set an explicit
-    // full-opacity attributed title; the leading pad aligns it with the rows.
-    let refresh_button = unsafe {
-        NSButton::buttonWithTitle_target_action(
-            &NSString::from_str("Refresh now"),
-            Some(&controller),
-            Some(sel!(refreshNow:)),
-            mtm,
-        )
+    // Custom Refresh row (keeps the menu open + native hover highlight).
+    let refresh_row = {
+        let this = mtm.alloc::<RefreshRow>().set_ivars(RefreshRowIvars {
+            shared,
+            trigger,
+            hovered: Cell::new(false),
+        });
+        let this: Retained<RefreshRow> = unsafe { msg_send![super(this), init] };
+        this
     };
-    refresh_button.setBordered(false);
-    refresh_button.setAlignment(NSTextAlignment::Left);
-    refresh_button.setAttributedTitle(&attributed(vec![(
-        "     Refresh now".into(),
-        NSColor::labelColor(),
-        NSFont::menuFontOfSize(13.0),
-    )]));
-    refresh_button.setFrame(NSRect::new(
+    refresh_row.setFrame(NSRect::new(
         NSPoint::new(0.0, 0.0),
         NSSize::new(240.0, 22.0),
     ));
+    // Stretch to the menu's full content width so the hover highlight spans it.
+    refresh_row.setAutoresizingMask(NSAutoresizingMaskOptions::ViewWidthSizable);
+    let tracking = unsafe {
+        NSTrackingArea::initWithRect_options_owner_userInfo(
+            NSTrackingArea::alloc(),
+            refresh_row.bounds(),
+            NSTrackingAreaOptions::MouseEnteredAndExited
+                | NSTrackingAreaOptions::ActiveAlways
+                | NSTrackingAreaOptions::InVisibleRect,
+            Some(&refresh_row),
+            None,
+        )
+    };
+    refresh_row.addTrackingArea(&tracking);
     let refresh_item = NSMenuItem::new(mtm);
-    refresh_item.setView(Some(&refresh_button));
+    refresh_item.setView(Some(&refresh_row));
     menu.addItem(&refresh_item);
 
     // nil target => `terminate:` is resolved up the responder chain to NSApp.
@@ -329,8 +406,8 @@ fn render(state: &AppState) -> View {
 }
 
 /// The "Last refresh" line: when the last fetch attempt completed and how it
-/// went, so a Refresh-now click always shows a concrete result — and a failure
-/// always shows its reason.
+/// went, so a refresh click always shows a concrete result — and a failure
+/// always shows its (short) reason.
 fn last_refresh_line(state: &AppState) -> String {
     let when = state
         .checked_at

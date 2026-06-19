@@ -25,6 +25,7 @@ objc2-foundation = { version = "0.3", features = [
     "NSRange",
 ] }
 objc2-app-kit = { version = "0.3", features = [
+    "objc2-core-foundation",
     "NSApplication",
     "NSResponder",
     "NSStatusBar",
@@ -40,8 +41,11 @@ objc2-app-kit = { version = "0.3", features = [
     "NSBezierPath",
     "NSColor",
     "NSAttributedString",
+    "NSStringDrawing",
     "NSFont",
     "NSText",
+    "NSEvent",
+    "NSTrackingArea",
     "block2",
 ] }
 
