@@ -147,7 +147,7 @@ fn next_wait(state: &AppState) -> Duration {
     let until_reset = state
         .snapshot
         .as_ref()
-        .and_then(|s| s.windows.iter().map(|w| w.resets_at).min())
+        .and_then(|s| s.windows.iter().filter_map(|w| w.resets_at).min())
         .and_then(|reset| (reset - Local::now() + margin).to_std().ok());
     match state.status {
         // Healthy: wait out the soonest reset; an elapsed reset retries instead.
@@ -168,7 +168,7 @@ mod tests {
             .map(|&s| UsageWindow {
                 label: "w".into(),
                 utilization: 0.0,
-                resets_at: Local::now() + chrono::Duration::seconds(s),
+                resets_at: Some(Local::now() + chrono::Duration::seconds(s)),
             })
             .collect();
         AppState {

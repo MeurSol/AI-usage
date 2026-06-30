@@ -16,7 +16,9 @@ pub struct UsageWindow {
     pub label: String,
     /// Percent used, 0.0 – 100.0.
     pub utilization: f64,
-    pub resets_at: DateTime<Local>,
+    /// When this window rolls over. The endpoint returns `null` for a window
+    /// that isn't currently counting down, so this is optional.
+    pub resets_at: Option<DateTime<Local>>,
 }
 
 /// A point-in-time view of all windows for one provider.

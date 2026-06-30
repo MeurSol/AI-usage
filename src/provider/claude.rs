@@ -23,7 +23,9 @@ enum GetError {
 #[derive(Deserialize)]
 struct RawWindow {
     utilization: f64,
-    resets_at: DateTime<Local>,
+    // `null` when the window isn't currently counting down.
+    #[serde(default)]
+    resets_at: Option<DateTime<Local>>,
 }
 
 #[derive(Deserialize)]
@@ -186,10 +188,27 @@ mod tests {
         let session = &snap.windows[0];
         assert_eq!(session.label, "Session (5h)");
         assert_eq!(session.utilization, 5.0);
-        assert_eq!(session.resets_at.to_utc().to_string(), "2026-05-30 23:09:59.915338 UTC");
+        assert_eq!(
+            session.resets_at.unwrap().to_utc().to_string(),
+            "2026-05-30 23:09:59.915338 UTC"
+        );
 
         let weekly = &snap.windows[1];
         assert_eq!(weekly.label, "Weekly (7d)");
         assert_eq!(weekly.utilization, 16.0);
+    }
+
+    #[test]
+    fn null_resets_at_parses_to_none() {
+        // The endpoint returns `resets_at: null` for a window that isn't
+        // counting down; that must not fail the whole parse.
+        let body = r#"{
+            "five_hour": {"utilization": 37.0, "resets_at": null},
+            "seven_day": {"utilization": 75.0, "resets_at": "2026-07-02T17:59:00+00:00"}
+        }"#;
+        let snap = ClaudeProvider::parse(body).expect("parse");
+        assert_eq!(snap.windows[0].utilization, 37.0);
+        assert!(snap.windows[0].resets_at.is_none());
+        assert!(snap.windows[1].resets_at.is_some());
     }
 }

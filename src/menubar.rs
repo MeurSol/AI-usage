@@ -213,12 +213,15 @@ impl Controller {
 
         let set_usage = |item: &NSMenuItem, row: &Row| match row {
             Row::Usage { label: name, pct, reset } => {
-                let title = attributed(vec![
+                let mut runs = vec![
                     (format!("{name}   "), primary.clone(), body.clone()),
                     (format!("{pct:.0}%   "), primary.clone(), bold.clone()),
-                    (format!("resets {reset}"), secondary.clone(), body.clone()),
-                ]);
-                item.setAttributedTitle(Some(&title));
+                ];
+                // The window may have no reset time (endpoint returns null).
+                if let Some(reset) = reset {
+                    runs.push((format!("resets {reset}"), secondary.clone(), body.clone()));
+                }
+                item.setAttributedTitle(Some(&attributed(runs)));
             }
             Row::Note(text) => {
                 let title = attributed(vec![(text.clone(), primary.clone(), body.clone())]);
@@ -358,7 +361,7 @@ struct View {
 }
 
 enum Row {
-    Usage { label: String, pct: f64, reset: String },
+    Usage { label: String, pct: f64, reset: Option<String> },
     Note(String),
 }
 
@@ -381,7 +384,7 @@ fn render(state: &AppState) -> View {
                 .map(|w| Row::Usage {
                     label: w.label.clone(),
                     pct: w.utilization,
-                    reset: fmt_reset(w.resets_at),
+                    reset: w.resets_at.map(fmt_reset),
                 })
                 .collect();
             let session = snap.windows.first().map(|w| w.utilization);
