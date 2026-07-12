@@ -1,14 +1,13 @@
 //! Usage providers. A `Provider` fetches a normalized `UsageSnapshot`.
 //!
-//! Today there is one provider (Claude, via the OAuth usage endpoint). The
-//! trait exists so future sources (Anthropic API usage, Codex) can plug in
-//! without touching the UI or polling layers.
+//! Providers normalize Claude and GPT/Codex usage into the same window model.
 
 use std::fmt;
 
 use chrono::{DateTime, Local};
 
 pub mod claude;
+pub mod gpt;
 
 /// One rate-limit window (e.g. the 5-hour session or the 7-day weekly limit).
 #[derive(Debug, Clone)]
@@ -33,6 +32,8 @@ pub struct UsageSnapshot {
 pub enum FetchError {
     /// Token missing or rejected (401) — user must re-login in Claude Code.
     AuthExpired,
+    /// Provider explicitly rejected the request for polling too quickly.
+    RateLimited,
     /// Anything else (network, parse, ...).
     Other(anyhow::Error),
 }
@@ -41,6 +42,7 @@ impl fmt::Display for FetchError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             FetchError::AuthExpired => write!(f, "auth expired — re-login in Claude Code"),
+            FetchError::RateLimited => write!(f, "rate-limited (429)"),
             FetchError::Other(e) => write!(f, "{e}"),
         }
     }
@@ -55,5 +57,8 @@ impl From<anyhow::Error> for FetchError {
 }
 
 pub trait Provider {
+    /// Short product name shown in the menu bar and dropdown.
+    fn name(&self) -> &'static str;
+
     fn fetch(&self) -> Result<UsageSnapshot, FetchError>;
 }

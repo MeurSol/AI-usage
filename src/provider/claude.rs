@@ -17,6 +17,7 @@ const OAUTH_BETA: &str = "oauth-2025-04-20";
 /// refresh and retry) from other failures.
 enum GetError {
     Unauthorized,
+    RateLimited,
     Other(anyhow::Error),
 }
 
@@ -91,7 +92,7 @@ impl ClaudeProvider {
         // the HTTP-scheme proxy from the environment; we intentionally ignore
         // ALL_PROXY (often socks5, which ureq can't use without a feature).
         // Cap the whole request so a stalled proxy connection can't wedge the
-        // worker (which would freeze the spinner and stop all refreshes).
+        // Claude worker; GPT's independent local worker remains unaffected.
         let config = ureq::Agent::config_builder()
             .proxy(http_proxy())
             .timeout_global(Some(Duration::from_secs(20)))
@@ -133,13 +134,13 @@ impl ClaudeProvider {
             .call()
         {
             Ok(mut resp) => {
-                let body = resp
-                    .body_mut()
-                    .read_to_string()
-                    .map_err(|e| GetError::Other(anyhow::Error::new(e).context("read usage body")))?;
+                let body = resp.body_mut().read_to_string().map_err(|e| {
+                    GetError::Other(anyhow::Error::new(e).context("read usage body"))
+                })?;
                 Self::parse(&body).map_err(GetError::Other)
             }
             Err(ureq::Error::StatusCode(401)) => Err(GetError::Unauthorized),
+            Err(ureq::Error::StatusCode(429)) => Err(GetError::RateLimited),
             Err(e) => Err(GetError::Other(
                 anyhow::Error::new(e).context("usage request failed"),
             )),
@@ -148,6 +149,10 @@ impl ClaudeProvider {
 }
 
 impl Provider for ClaudeProvider {
+    fn name(&self) -> &'static str {
+        "Claude"
+    }
+
     fn fetch(&self) -> Result<UsageSnapshot, FetchError> {
         let token = self.tokens.access_token().map_err(FetchError::Other)?;
         match self.get_usage(&token) {
@@ -155,13 +160,18 @@ impl Provider for ClaudeProvider {
             // Token rejected: refresh once and retry. A failure now means the
             // refresh_token itself is bad — the user must re-login.
             Err(GetError::Unauthorized) => {
-                let token = self.tokens.refresh_now().map_err(|_| FetchError::AuthExpired)?;
+                let token = self
+                    .tokens
+                    .refresh_now()
+                    .map_err(|_| FetchError::AuthExpired)?;
                 match self.get_usage(&token) {
                     Ok(snapshot) => Ok(snapshot),
                     Err(GetError::Unauthorized) => Err(FetchError::AuthExpired),
+                    Err(GetError::RateLimited) => Err(FetchError::RateLimited),
                     Err(GetError::Other(e)) => Err(FetchError::Other(e)),
                 }
             }
+            Err(GetError::RateLimited) => Err(FetchError::RateLimited),
             Err(GetError::Other(e)) => Err(FetchError::Other(e)),
         }
     }

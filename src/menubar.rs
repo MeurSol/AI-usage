@@ -38,14 +38,18 @@ const FONT_SIZE: f64 = 13.0;
 pub struct Ivars {
     shared: Shared,
     item: Retained<NSStatusItem>,
-    /// Persistent dropdown rows, updated in place so an open menu stays live.
-    session_item: Retained<NSMenuItem>,
-    weekly_item: Retained<NSMenuItem>,
+    /// Persistent provider sections, updated in place so an open menu stays live.
+    provider_items: Vec<ProviderItems>,
     last_refresh_item: Retained<NSMenuItem>,
     /// Last `AppState.version` rendered; skip redraw when unchanged.
     last_version: Cell<Option<u64>>,
     /// Spinner rotation in radians, advanced each tick while a fetch is in flight.
     spin_phase: Cell<f64>,
+}
+
+pub struct ProviderItems {
+    header: Retained<NSMenuItem>,
+    usage: Vec<Retained<NSMenuItem>>,
 }
 
 define_class!(
@@ -69,7 +73,6 @@ define_class!(
 /// plain menu item would dismiss it before the live result could show) and so we
 /// can draw the native hover highlight that an actionless view wouldn't get.
 struct RefreshRowIvars {
-    shared: Shared,
     trigger: Trigger,
     hovered: Cell<bool>,
 }
@@ -132,32 +135,24 @@ define_class!(
 
         #[unsafe(method(mouseUp:))]
         fn mouse_up(&self, _event: &NSEvent) {
-            request_refresh(&self.ivars().shared, &self.ivars().trigger);
+            request_refresh(&self.ivars().trigger);
         }
     }
 );
 
-/// Reflect a refresh request immediately — stamp the action time and raise the
-/// spinner — then fire the trigger so the poller runs a real fetch. The "Last
-/// refresh" row and gauge move at once, even if the fetch is debounced,
-/// rate-limited, or fails; apply() overwrites with the real outcome.
-fn request_refresh(shared: &Shared, trigger: &Trigger) {
-    {
-        let mut state = shared.lock().expect("state lock");
-        state.checked_at = Some(Local::now());
-        state.refreshing = true;
-        state.version = state.version.wrapping_add(1);
-    }
+/// Broadcast an explicit request. Each provider still honors its own minimum
+/// gap and any active 429 cooldown; its worker raises the spinner when I/O
+/// actually begins.
+fn request_refresh(trigger: &Trigger) {
     trigger.fire();
 }
 
 impl Controller {
     fn refresh(&self) {
         let mtm = MainThreadMarker::from(self);
-        // Snapshot under one lock: whether a fetch is in flight, and (only when
-        // the version changed) a fresh render. The gauge slot spins while
-        // fetching; rows rebuild whenever the version changed — including the bump
-        // from a refresh click — so the click's result shows while spinning.
+        // Snapshot under one lock: whether any provider is in flight, and (only
+        // when the version changed) a fresh render. Each worker bumps the version
+        // when its own I/O starts and completes.
         let (refreshing, view) = {
             let state = self.ivars().shared.lock().expect("state lock");
             let view = if self.ivars().last_version.get() == Some(state.version) {
@@ -166,7 +161,10 @@ impl Controller {
                 self.ivars().last_version.set(Some(state.version));
                 Some(render(&state))
             };
-            (state.refreshing, view)
+            (
+                state.providers.iter().any(|provider| provider.refreshing),
+                view,
+            )
         };
 
         // Idle tick: nothing in flight and nothing new to draw — bail cheaply.
@@ -212,9 +210,13 @@ impl Controller {
         let bold = NSFont::boldSystemFontOfSize(FONT_SIZE);
 
         let set_usage = |item: &NSMenuItem, row: &Row| match row {
-            Row::Usage { label: name, pct, reset } => {
+            Row::Usage {
+                label: name,
+                pct,
+                reset,
+            } => {
                 let mut runs = vec![
-                    (format!("{name}   "), primary.clone(), body.clone()),
+                    (format!("  {name}   "), primary.clone(), body.clone()),
                     (format!("{pct:.0}%   "), primary.clone(), bold.clone()),
                 ];
                 // The window may have no reset time (endpoint returns null).
@@ -224,22 +226,39 @@ impl Controller {
                 item.setAttributedTitle(Some(&attributed(runs)));
             }
             Row::Note(text) => {
-                let title = attributed(vec![(text.clone(), primary.clone(), body.clone())]);
+                let title = attributed(vec![(format!("  {text}"), primary.clone(), body.clone())]);
                 item.setAttributedTitle(Some(&title));
             }
         };
 
-        set_usage(&self.ivars().session_item, &view.rows[0]);
-        match view.rows.get(1) {
-            Some(row) => {
-                self.ivars().weekly_item.setHidden(false);
-                set_usage(&self.ivars().weekly_item, row);
+        for (items, provider) in self.ivars().provider_items.iter().zip(&view.providers) {
+            let suffix = match provider.status {
+                Status::Stale => " · stale",
+                Status::AuthExpired => " · auth required",
+                Status::Error => " · unavailable",
+                _ => "",
+            };
+            let title = attributed(vec![(
+                format!("{}{suffix}", provider.name),
+                primary.clone(),
+                bold.clone(),
+            )]);
+            items.header.setAttributedTitle(Some(&title));
+
+            for (index, item) in items.usage.iter().enumerate() {
+                if let Some(row) = provider.rows.get(index) {
+                    item.setHidden(false);
+                    set_usage(item, row);
+                } else {
+                    item.setHidden(true);
+                }
             }
-            None => self.ivars().weekly_item.setHidden(true),
         }
 
         let last = attributed(vec![(view.last_refresh.clone(), secondary, body)]);
-        self.ivars().last_refresh_item.setAttributedTitle(Some(&last));
+        self.ivars()
+            .last_refresh_item
+            .setAttributedTitle(Some(&last));
     }
 }
 
@@ -251,16 +270,29 @@ pub fn install(mtm: MainThreadMarker, shared: Shared, trigger: Trigger) -> Retai
         button.setTitle(&NSString::from_str("…"));
     }
 
-    let session_item = NSMenuItem::new(mtm);
-    let weekly_item = NSMenuItem::new(mtm);
+    let provider_names: Vec<String> = shared
+        .lock()
+        .expect("state lock")
+        .providers
+        .iter()
+        .map(|provider| provider.name.clone())
+        .collect();
+    let provider_items: Vec<ProviderItems> = provider_names
+        .iter()
+        .map(|_| ProviderItems {
+            header: NSMenuItem::new(mtm),
+            // Both current providers expose a five-hour and a weekly window.
+            // Keeping these rows persistent lets an open menu update in place.
+            usage: vec![NSMenuItem::new(mtm), NSMenuItem::new(mtm)],
+        })
+        .collect();
     let last_refresh_item = NSMenuItem::new(mtm);
 
     let controller = {
         let this = mtm.alloc::<Controller>().set_ivars(Ivars {
             shared: shared.clone(),
             item: item.clone(),
-            session_item: session_item.clone(),
-            weekly_item: weekly_item.clone(),
+            provider_items,
             last_refresh_item: last_refresh_item.clone(),
             last_version: Cell::new(None),
             spin_phase: Cell::new(0.0),
@@ -274,10 +306,17 @@ pub fn install(mtm: MainThreadMarker, shared: Shared, trigger: Trigger) -> Retai
     // (auto-enable greys out actionless items).
     menu.setAutoenablesItems(false);
 
-    session_item.setEnabled(true); // keep full-contrast attributed text
-    weekly_item.setEnabled(true);
-    menu.addItem(&session_item);
-    menu.addItem(&weekly_item);
+    for (index, provider) in controller.ivars().provider_items.iter().enumerate() {
+        if index > 0 {
+            menu.addItem(&NSMenuItem::separatorItem(mtm));
+        }
+        provider.header.setEnabled(true);
+        menu.addItem(&provider.header);
+        for item in &provider.usage {
+            item.setEnabled(true); // keep full-contrast attributed text
+            menu.addItem(item);
+        }
+    }
 
     menu.addItem(&NSMenuItem::separatorItem(mtm));
     last_refresh_item.setEnabled(false);
@@ -287,7 +326,6 @@ pub fn install(mtm: MainThreadMarker, shared: Shared, trigger: Trigger) -> Retai
     // Custom Refresh row (keeps the menu open + native hover highlight).
     let refresh_row = {
         let this = mtm.alloc::<RefreshRow>().set_ivars(RefreshRowIvars {
-            shared,
             trigger,
             hovered: Cell::new(false),
         });
@@ -350,96 +388,139 @@ pub fn install(mtm: MainThreadMarker, shared: Shared, trigger: Trigger) -> Retai
 
 /// Plain (AppKit-free) description of what to draw, computed under the state lock.
 struct View {
-    /// Session % for the gauge (`None` when there's no data).
+    /// Highest five-hour session % for the gauge (`None` when there's no data).
     session_frac: Option<f64>,
-    /// Menu-bar title text, e.g. `27% / 18%`.
+    /// Menu-bar title text, e.g. `Claude 27%` or `GPT 41%`.
     bar_title: String,
-    /// One or two usage rows, or a single note row when there's no data.
-    rows: Vec<Row>,
+    providers: Vec<ProviderView>,
     /// The "Last refresh …" status line.
     last_refresh: String,
 }
 
+struct ProviderView {
+    name: String,
+    status: Status,
+    /// One or two usage rows, or a single note row when there's no data.
+    rows: Vec<Row>,
+}
+
 enum Row {
-    Usage { label: String, pct: f64, reset: Option<String> },
+    Usage {
+        label: String,
+        pct: f64,
+        reset: Option<String>,
+    },
     Note(String),
 }
 
 /// Produce the `View` for the current state.
 fn render(state: &AppState) -> View {
-    let (session_frac, bar_title, rows) = match &state.snapshot {
-        Some(snap) => {
-            let pcts: Vec<String> = snap
-                .windows
-                .iter()
-                .map(|w| format!("{:.0}%", w.utilization))
-                .collect();
-            let bar_title = match state.status {
-                Status::Stale => format!("{} ·", pcts.join(" / ")),
-                _ => pcts.join(" / "),
-            };
-            let rows = snap
-                .windows
-                .iter()
-                .map(|w| Row::Usage {
-                    label: w.label.clone(),
-                    pct: w.utilization,
-                    reset: w.resets_at.map(fmt_reset),
-                })
-                .collect();
-            let session = snap.windows.first().map(|w| w.utilization);
-            (session, bar_title, rows)
+    let mut winner: Option<(&str, f64, Status)> = None;
+    for provider in &state.providers {
+        let Some(session) = provider
+            .snapshot
+            .as_ref()
+            .and_then(|snapshot| snapshot.windows.first())
+        else {
+            continue;
+        };
+        if winner.is_none_or(|(_, pct, _)| session.utilization > pct) {
+            winner = Some((&provider.name, session.utilization, provider.status));
         }
-        None => match state.status {
-            Status::AuthExpired => (
-                None,
-                "auth?".into(),
-                vec![Row::Note("Auth expired — re-login in Claude Code".into())],
-            ),
-            Status::Error => (None, "—".into(), vec![Row::Note("No data yet".into())]),
-            _ => (None, "…".into(), vec![Row::Note("Loading…".into())]),
-        },
+    }
+
+    let (session_frac, bar_title) = match winner {
+        Some((name, pct, status)) => {
+            let stale = if status == Status::Stale { " ·" } else { "" };
+            (Some(pct), format!("{name} {pct:.0}%{stale}"))
+        }
+        None if state
+            .providers
+            .iter()
+            .any(|provider| provider.status == Status::Loading) =>
+        {
+            (None, "…".into())
+        }
+        None => (None, "—".into()),
     };
+
+    let providers = state.providers.iter().map(render_provider).collect();
     View {
         session_frac,
         bar_title,
-        rows,
+        providers,
         last_refresh: last_refresh_line(state),
     }
 }
 
-/// The "Last refresh" line: when the last fetch attempt completed and how it
-/// went, so a refresh click always shows a concrete result — and a failure
-/// always shows its (short) reason.
-fn last_refresh_line(state: &AppState) -> String {
-    let when = state
-        .checked_at
-        .map_or_else(|| "—".into(), |t| t.format("%H:%M:%S").to_string());
-    let outcome = if state.refreshing {
-        "checking…".into()
-    } else {
-        match state.status {
-            Status::Loading => "checking…".into(),
-            Status::Ok => "OK".into(),
-            Status::AuthExpired => "auth expired".into(),
-            // Surface the failure reason, but keep it short (it sets the menu
-            // width). 429 is the common case; the stale "·" in the bar already
-            // signals we're showing the previous snapshot.
-            Status::Stale | Status::Error => {
-                let msg = state.message.as_deref().unwrap_or("unknown error");
-                if msg.contains("429") {
-                    "rate-limited (429)".into()
-                } else {
-                    format!("failed: {msg}")
-                }
-            }
+fn render_provider(provider: &crate::poller::ProviderState) -> ProviderView {
+    let rows = match &provider.snapshot {
+        Some(snapshot) => snapshot
+            .windows
+            .iter()
+            .map(|window| Row::Usage {
+                label: window.label.clone(),
+                pct: window.utilization,
+                reset: window.resets_at.map(fmt_reset),
+            })
+            .collect(),
+        None => {
+            let note = match provider.status {
+                Status::Loading => "Loading…",
+                Status::AuthExpired => "Auth expired — re-login",
+                Status::Error if provider.name == "GPT" => "No usage yet — run a Codex turn",
+                Status::Error => "No data — refresh failed",
+                Status::Stale | Status::Ok => "No data yet",
+            };
+            vec![Row::Note(note.into())]
         }
     };
-    format!("Last refresh {when} · {outcome}")
+    ProviderView {
+        name: provider.name.clone(),
+        status: provider.status,
+        rows,
+    }
+}
+
+/// Per-provider completion times make independent event-driven refreshes
+/// visible: a Codex turn can update GPT without pretending Claude was checked.
+fn last_refresh_line(state: &AppState) -> String {
+    state
+        .providers
+        .iter()
+        .map(|provider| {
+            let when = provider
+                .checked_at
+                .map_or_else(|| "—".into(), |time| time.format("%H:%M:%S").to_string());
+            let status = if provider.refreshing {
+                "checking…"
+            } else {
+                match provider.status {
+                    Status::Loading => "waiting",
+                    Status::Ok => "OK",
+                    Status::AuthExpired => "auth expired",
+                    Status::Stale | Status::Error
+                        if provider
+                            .message
+                            .as_deref()
+                            .is_some_and(|message| message.contains("429")) =>
+                    {
+                        "rate-limited"
+                    }
+                    Status::Stale => "stale",
+                    Status::Error => "unavailable",
+                }
+            };
+            format!("{} {when} {status}", provider.name)
+        })
+        .collect::<Vec<_>>()
+        .join(" · ")
 }
 
 /// Build a single attributed string from colored/fonted runs. Main thread only.
-fn attributed(runs: Vec<(String, Retained<NSColor>, Retained<NSFont>)>) -> Retained<NSAttributedString> {
+fn attributed(
+    runs: Vec<(String, Retained<NSColor>, Retained<NSFont>)>,
+) -> Retained<NSAttributedString> {
     let out = NSMutableAttributedString::new();
     for (text, color, font) in runs {
         let piece = NSMutableAttributedString::initWithString(
@@ -448,8 +529,8 @@ fn attributed(runs: Vec<(String, Retained<NSColor>, Retained<NSFont>)>) -> Retai
         );
         let range = NSRange::new(0, piece.length());
         unsafe {
-            piece.addAttribute_value_range(NSForegroundColorAttributeName, &*color, range);
-            piece.addAttribute_value_range(NSFontAttributeName, &*font, range);
+            piece.addAttribute_value_range(NSForegroundColorAttributeName, &color, range);
+            piece.addAttribute_value_range(NSFontAttributeName, &font, range);
         }
         out.appendAttributedString(&piece);
     }
@@ -462,5 +543,71 @@ fn fmt_reset(dt: DateTime<Local>) -> String {
         dt.format("%H:%M").to_string()
     } else {
         dt.format("%b %-d, %H:%M").to_string()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::poller::ProviderState;
+    use crate::provider::{UsageSnapshot, UsageWindow};
+
+    fn provider(name: &str, session: f64, weekly: f64) -> ProviderState {
+        ProviderState {
+            name: name.into(),
+            snapshot: Some(UsageSnapshot {
+                windows: vec![
+                    UsageWindow {
+                        label: "Session (5h)".into(),
+                        utilization: session,
+                        resets_at: None,
+                    },
+                    UsageWindow {
+                        label: "Weekly (7d)".into(),
+                        utilization: weekly,
+                        resets_at: None,
+                    },
+                ],
+            }),
+            status: Status::Ok,
+            message: None,
+            updated_at: None,
+            checked_at: None,
+            refreshing: false,
+        }
+    }
+
+    #[test]
+    fn status_bar_uses_highest_five_hour_provider() {
+        let state = AppState {
+            providers: vec![provider("GPT", 28.0, 10.0), provider("Claude", 73.0, 15.0)],
+            version: 1,
+        };
+        let view = render(&state);
+        assert_eq!(view.bar_title, "Claude 73%");
+        assert_eq!(view.session_frac, Some(73.0));
+        assert_eq!(view.providers.len(), 2);
+    }
+
+    #[test]
+    fn available_provider_remains_visible_when_other_has_no_data() {
+        let state = AppState {
+            providers: vec![
+                ProviderState {
+                    name: "GPT".into(),
+                    snapshot: None,
+                    status: Status::Error,
+                    message: Some("no snapshot".into()),
+                    updated_at: None,
+                    checked_at: None,
+                    refreshing: false,
+                },
+                provider("Claude", 41.0, 20.0),
+            ],
+            version: 1,
+        };
+        let view = render(&state);
+        assert_eq!(view.bar_title, "Claude 41%");
+        assert_eq!(view.providers.len(), 2);
     }
 }

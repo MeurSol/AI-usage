@@ -2,7 +2,7 @@
 name = "ai-usage"
 version = "0.1.0"
 edition = "2021"
-description = "macOS menu bar monitor for Claude usage (session + weekly limits)"
+description = "macOS menu bar monitor for GPT/Codex and Claude usage limits"
 
 [dependencies]
 anyhow = "1"

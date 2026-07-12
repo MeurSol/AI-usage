@@ -10,9 +10,13 @@ use objc2::MainThreadMarker;
 use objc2_app_kit::{NSApplication, NSApplicationActivationPolicy};
 
 use provider::claude::ClaudeProvider;
+use provider::gpt::GptProvider;
 
 fn main() {
-    let (shared, trigger) = poller::spawn(ClaudeProvider::new());
+    let (shared, trigger) = poller::spawn(vec![
+        Box::new(GptProvider::new()),
+        Box::new(ClaudeProvider::new()),
+    ]);
 
     let mtm = MainThreadMarker::new().expect("must run on the main thread");
     let app = NSApplication::sharedApplication(mtm);

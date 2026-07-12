@@ -1,33 +1,45 @@
 <div align="center">
   <img src="docs/icon.png" width="128" alt="AI-usage icon" />
   <h1>AI-usage</h1>
-  <p>A tiny, fast macOS menu bar app that shows your Claude usage at a glance.</p>
+  <p>A tiny, fast macOS menu bar app that shows your GPT/Codex and Claude usage at a glance.</p>
 </div>
 
 ---
 
 AI-usage lives in your macOS menu bar and shows the current **session (5h)** and
-**weekly (7d)** Claude limit utilization, plus when each window resets — using
-the same official data source as Claude Code's `/usage`, with no log scraping.
+**weekly (7d)** GPT/Codex and Claude limit utilization, plus when each window
+resets. The status item names whichever app currently has the higher five-hour
+session utilization.
 
 ```
-menu bar:   ◔ 27% / 18%
-            └ session% / weekly%, with a colored gauge for the session
+menu bar:   ◔ Claude 27%
+            └ app with the highest session%, with a colored gauge
 
-dropdown:   Session (5h)   27%   resets 23:09
-            Weekly (7d)    18%   resets Jun 4
+dropdown:   GPT
+              Session (5h)    12%   resets 22:40
+              Weekly (7d)      8%   resets Jul 18
+            ─────────────
+            Claude
+              Session (5h)    27%   resets 23:09
+              Weekly (7d)     18%   resets Jul 16
             ─────────────
             Quit
 ```
 
 ## Features
 
-- **Session + weekly utilization** with reset times, read straight from the
-  official OAuth usage endpoint (the one `/usage` uses).
+- **GPT + Claude session and weekly utilization** with reset times. Claude is
+  read from its OAuth usage endpoint; GPT is read from the rate-limit snapshots
+  Codex writes to its local session events.
+- **Highest-session status item** — shows `GPT 42%` or `Claude 57%`, whichever
+  has consumed more of its current five-hour window.
 - **Colored session gauge** in the bar — a small pie tinted green → red by level.
 - **Refreshes the moment it matters**: on each conversation turn (watches
-  `~/.claude/projects`), when you open the menu, at each limit reset boundary,
-  and on a 60s heartbeat.
+  `~/.claude/projects` and `~/.codex/sessions`), on manual refresh, and at each
+  limit reset boundary.
+- **Provider-aware rate protection** — GPT local events never call Claude's
+  endpoint. Claude requests are coalesced, kept at least 15s apart, and back off
+  exponentially for 429 responses while GPT continues updating independently.
 - **Automatic token refresh** — refreshes the OAuth token via its refresh-token
   when it expires and writes it back, so it keeps working even after Claude Code
   has been idle.
@@ -35,13 +47,14 @@ dropdown:   Session (5h)   27%   resets 23:09
   memory footprint ~17 MB (the AppKit baseline), stable, ~0% idle CPU.
 - **Launch at login**, no Dock icon (menu bar agent).
 - **Extensible** — a single `Provider` trait is the extension point for future
-  sources (Anthropic API usage, Codex, …).
+  sources such as Anthropic API usage.
 
 ## Requirements
 
 - macOS 11+ (Apple Silicon or Intel)
 - Rust ≥ 1.85 (dependencies use edition 2024)
-- Logged in to Claude Code (the app reads its OAuth token from the Keychain)
+- Logged in to Claude Code for Claude usage
+- At least one Codex turn in `~/.codex/sessions` for GPT usage
 
 ## Install
 
@@ -69,15 +82,19 @@ cargo build --release
 - **Token** — read from the macOS Keychain generic-password item
   `Claude Code-credentials` (`claudeAiOauth.accessToken` / `refreshToken` /
   `expiresAt`), re-read each poll and refreshed on expiry.
-- **Usage** — `GET https://api.anthropic.com/api/oauth/usage` with
+- **Claude usage** — `GET https://api.anthropic.com/api/oauth/usage` with
   `Authorization: Bearer <token>` and `anthropic-beta: oauth-2025-04-20`,
   returning `five_hour` (session) and `seven_day` (weekly) utilization + reset
   times.
+- **GPT usage** — the newest Codex `token_count.rate_limits` event under
+  `~/.codex/sessions`, whose `primary` window is 300 minutes and `secondary`
+  window is 10,080 minutes. No OpenAI credential is read.
 - **Refresh** — `POST https://platform.claude.com/v1/oauth/token`
   (`grant_type=refresh_token`) when the token is near expiry or returns 401.
 
-A worker thread does all I/O and writes a shared `AppState`; the main thread
-only reads it (AppKit must be touched on the main thread only).
+One worker per provider does I/O and writes its own section of a shared
+`AppState`; the main thread only reads it (AppKit must be touched on the main
+thread only). A slow or rate-limited Claude request never delays local GPT data.
 
 ### Proxy
 
@@ -103,13 +120,14 @@ src/
   main.rs              NSApplication (accessory) bootstrap + run loop
   menubar.rs           status item + dropdown; redraws from state
   gauge.rs             session % pie as a colored NSImage (green→red ramp)
-  poller.rs            worker thread: triggers → fetch → Arc<Mutex<AppState>>
-  watch.rs             notify watcher on ~/.claude/projects (refresh per turn)
+  poller.rs            independent provider workers + throttle/backoff policy
+  watch.rs             routes Claude/Codex JSONL changes to matching workers
   token.rs             OAuth access-token cache + refresh-token rotation
   keychain.rs          read/write the Claude OAuth credentials in the Keychain
   provider/
     mod.rs             Provider trait + UsageWindow / UsageSnapshot / FetchError
     claude.rs          ClaudeProvider: keychain → HTTP GET → parse
+    gpt.rs             GptProvider: latest local Codex rate-limit event → parse
 packaging/             Info.plist + AppIcon.icns
 scripts/               install / uninstall / signing / icon generation
 ```
@@ -123,7 +141,7 @@ resets_at }`, and wire it in `main.rs`. The UI and poller are provider-agnostic.
 ## Roadmap
 
 - Opus / Sonnet weekly breakdown + `extra_usage` display
-- Anthropic API usage / Codex providers
+- Anthropic API usage
 - Notarized/signed release builds
 
 ## Notes
