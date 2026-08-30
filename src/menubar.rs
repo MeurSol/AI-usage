@@ -467,7 +467,7 @@ fn render_provider(provider: &crate::poller::ProviderState) -> ProviderView {
         None => {
             let note = match provider.status {
                 Status::Loading => "Loading…",
-                Status::AuthExpired => "Auth expired — re-login",
+                Status::AuthExpired => "Signed out — run /login in Claude Code",
                 Status::Error if provider.name == "GPT" => "No usage yet — run a Codex turn",
                 Status::Error => "No data — refresh failed",
                 Status::Stale | Status::Ok => "No data yet",

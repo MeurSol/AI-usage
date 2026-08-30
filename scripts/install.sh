@@ -32,15 +32,17 @@ BIN="$APP_DIR/Contents/MacOS/ai-usage"
 echo "==> Code-signing"
 IDENTITY="AI-usage Local"
 if security find-identity -p codesigning | grep -q "$IDENTITY"; then
-    # Stable self-signed identity: keeps the Keychain "Always Allow" across
-    # rebuilds. Fixed --identifier so the designated requirement is stable.
+    # Stable self-signed identity with a fixed --identifier, so the app keeps
+    # one designated requirement across rebuilds. Keychain access does not
+    # depend on it: credentials are read through /usr/bin/security, which sits
+    # in the item's apple-tool: partition (see src/keychain.rs).
     codesign --force --options runtime \
         --identifier "$BUNDLE_ID" \
         --sign "$IDENTITY" "$APP_DIR"
     echo "    signed with '$IDENTITY'"
 else
-    # No stable identity: ad-hoc sign (changes each build → Keychain may
-    # re-prompt). Run scripts/setup-signing.sh once to fix this.
+    # No stable identity: ad-hoc sign. Run scripts/setup-signing.sh once for
+    # a stable one.
     codesign --force --identifier "$BUNDLE_ID" --sign - "$APP_DIR"
     echo "    ad-hoc signed (run scripts/setup-signing.sh for a stable identity)"
 fi
@@ -100,5 +102,4 @@ launchctl kickstart -k "gui/$uid/$BUNDLE_ID"
 
 echo "Done. '$APP_NAME' is installed at $APP_DIR, running, and starts at login."
 echo "Find it in Finder → Applications (or Launchpad / Spotlight)."
-echo "First launch may prompt for Keychain access — choose 'Always Allow'."
 echo "Logs: /tmp/$BUNDLE_ID.log"

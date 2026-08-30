@@ -1,86 +1,82 @@
-//! OAuth access-token management: hand out a valid access token, refreshing via
-//! the refresh_token when the Keychain token has expired (e.g. Claude Code has
-//! been idle). Rotated tokens are written back so Claude Code stays in sync.
+//! Access-token management: hand out the token Claude Code has stored in the
+//! Keychain, cached until it nears expiry.
+//!
+//! We deliberately do not refresh. Claude Code owns the refresh cycle, and the
+//! OAuth refresh_token rotates on every use — refreshing here too would race
+//! it, and the write-back needed to keep it in sync would evict Claude Code
+//! from the Keychain item's partition list (see `keychain`). When the stored
+//! token has expired we instead run Claude Code (see `keepalive`) and re-read
+//! what it stores.
 
 use std::sync::Mutex;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use anyhow::{Context, Result};
-use serde::Deserialize;
 
-use crate::keychain::{self, Credentials};
+use crate::{keepalive, keychain};
 
-const TOKEN_URL: &str = "https://platform.claude.com/v1/oauth/token";
-const CLIENT_ID: &str = "9d1c250a-e61b-44d9-88ed-5944d1962f5e";
 /// Treat a token as expired this long before its real expiry, to avoid races.
 const SKEW_MS: i64 = 60_000;
-
-#[derive(Deserialize)]
-struct RefreshResponse {
-    access_token: String,
-    refresh_token: String,
-    expires_in: i64, // seconds
-}
 
 struct Cached {
     access_token: String,
     expires_at_ms: i64,
 }
 
+/// Why we couldn't produce an access token. `Stale` means the Keychain token
+/// has expired and asking Claude Code to renew it did not help — the OAuth
+/// grant itself is gone, and only signing in again fixes it.
+pub enum TokenError {
+    Stale,
+    Other(anyhow::Error),
+}
+
+impl From<anyhow::Error> for TokenError {
+    fn from(e: anyhow::Error) -> Self {
+        TokenError::Other(e)
+    }
+}
+
+#[derive(Default)]
 pub struct TokenManager {
-    agent: ureq::Agent,
     cached: Mutex<Option<Cached>>,
 }
 
 impl TokenManager {
-    pub fn new(agent: ureq::Agent) -> Self {
-        Self {
-            agent,
-            cached: Mutex::new(None),
-        }
+    pub fn new() -> Self {
+        Self::default()
     }
 
-    /// A valid access token, refreshing if the current one is near expiry.
-    pub fn access_token(&self) -> Result<String> {
+    /// A usable access token, re-reading the Keychain once the cached one
+    /// nears expiry.
+    pub fn access_token(&self) -> Result<String, TokenError> {
         if let Some(token) = self.cached_valid() {
             return Ok(token);
         }
-        let creds = keychain::load().context("load credentials")?;
-        if creds.expires_at_ms - now_ms() > SKEW_MS {
-            self.set_cache(&creds.access_token, creds.expires_at_ms);
-            return Ok(creds.access_token);
+        self.reload()
+    }
+
+    /// Re-read the Keychain, bypassing the cache. For a 401 on a token we
+    /// still believed valid: Claude Code may have rotated it since we cached
+    /// it, in which case the retry succeeds with the new one.
+    ///
+    /// A token that has genuinely expired means nothing has run Claude Code
+    /// for hours, so we run it ourselves and read again.
+    pub fn reload(&self) -> Result<String, TokenError> {
+        match self.read_stored() {
+            Err(TokenError::Stale) if keepalive::nudge() => self.read_stored(),
+            other => other,
         }
-        self.refresh(&creds)
     }
 
-    /// Force a refresh (e.g. after a 401 despite a seemingly-valid token).
-    pub fn refresh_now(&self) -> Result<String> {
+    /// The stored token, if Claude Code has left us a live one.
+    fn read_stored(&self) -> Result<String, TokenError> {
         let creds = keychain::load().context("load credentials")?;
-        self.refresh(&creds)
-    }
-
-    fn refresh(&self, creds: &Credentials) -> Result<String> {
-        let body = serde_json::json!({
-            "grant_type": "refresh_token",
-            "refresh_token": creds.refresh_token,
-            "client_id": CLIENT_ID,
-        });
-        let resp: RefreshResponse = self
-            .agent
-            .post(TOKEN_URL)
-            .header("Content-Type", "application/json")
-            .send_json(body)
-            .context("oauth refresh request")?
-            .body_mut()
-            .read_json()
-            .context("parse oauth refresh response")?;
-
-        let expires_at_ms = now_ms() + resp.expires_in * 1000;
-        // Persist rotated tokens so Claude Code keeps working too.
-        keychain::store_refreshed(creds, &resp.access_token, &resp.refresh_token, expires_at_ms)
-            .context("write back refreshed credentials")?;
-        self.set_cache(&resp.access_token, expires_at_ms);
-        Ok(resp.access_token)
+        if creds.expires_at_ms - now_ms() <= SKEW_MS {
+            return Err(TokenError::Stale);
+        }
+        self.set_cache(&creds.access_token, creds.expires_at_ms);
+        Ok(creds.access_token)
     }
 
     fn cached_valid(&self) -> Option<String> {

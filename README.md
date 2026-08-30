@@ -40,9 +40,10 @@ dropdown:   GPT
 - **Provider-aware rate protection** — GPT local events never call Claude's
   endpoint. Claude requests are coalesced, kept at least 15s apart, and back off
   exponentially for 429 responses while GPT continues updating independently.
-- **Automatic token refresh** — refreshes the OAuth token via its refresh-token
-  when it expires and writes it back, so it keeps working even after Claude Code
-  has been idle.
+- **Never writes your credential** — the Keychain item is read-only here, via
+  `/usr/bin/security`. When the stored token has aged out, AI-usage runs Claude
+  Code once and lets *it* renew, so the rotating refresh-token stays under its
+  owner's control.
 - **Native & light** — pure AppKit via `objc2`, no Electron/web runtime. Real
   memory footprint ~17 MB (the AppKit baseline), stable, ~0% idle CPU.
 - **Launch at login**, no Dock icon (menu bar agent).
@@ -64,8 +65,7 @@ scripts/setup-signing.sh   # optional, once — see "Code signing" below
 scripts/install.sh         # build, sign, install to /Applications, start at login
 ```
 
-Find **AI-usage** in Finder → Applications (or Launchpad / Spotlight). On first
-launch macOS prompts once for Keychain access — choose **Always Allow**.
+Find **AI-usage** in Finder → Applications (or Launchpad / Spotlight).
 
 Uninstall with `scripts/uninstall.sh`.
 
@@ -80,8 +80,9 @@ cargo build --release
 ## How it works
 
 - **Token** — read from the macOS Keychain generic-password item
-  `Claude Code-credentials` (`claudeAiOauth.accessToken` / `refreshToken` /
-  `expiresAt`), re-read each poll and refreshed on expiry.
+  `Claude Code-credentials` (`claudeAiOauth.accessToken` / `expiresAt`) by
+  shelling out to `/usr/bin/security`. Read-only, and re-read once the cached
+  copy nears expiry.
 - **Claude usage** — `GET https://api.anthropic.com/api/oauth/usage` with
   `Authorization: Bearer <token>` and `anthropic-beta: oauth-2025-04-20`,
   returning `five_hour` (session) and `seven_day` (weekly) utilization + reset
@@ -89,8 +90,9 @@ cargo build --release
 - **GPT usage** — the newest Codex `token_count.rate_limits` event under
   `~/.codex/sessions`, whose `primary` window is 300 minutes and `secondary`
   window is 10,080 minutes. No OpenAI credential is read.
-- **Refresh** — `POST https://platform.claude.com/v1/oauth/token`
-  (`grant_type=refresh_token`) when the token is near expiry or returns 401.
+- **Renewal** — not ours to do. Claude Code owns the refresh cycle; when the
+  stored token has expired we run `claude` once (at most every 30 min) and read
+  the item again.
 
 One worker per provider does I/O and writes its own section of a shared
 `AppState`; the main thread only reads it (AppKit must be touched on the main
@@ -108,8 +110,7 @@ ignored.)
 ### Code signing
 
 `setup-signing.sh` creates a self-signed code-signing identity in your login
-keychain so `install.sh` can sign the bundle with a **stable** identity. That
-keeps the Keychain "Always Allow" grant from being revoked every rebuild. It is
+keychain so `install.sh` can sign the bundle with a **stable** identity. It is
 self-signed (not Apple-notarized) — fine because the app is launched directly,
 not distributed. Skip it and `install.sh` falls back to ad-hoc signing.
 
@@ -122,8 +123,9 @@ src/
   gauge.rs             session % pie as a colored NSImage (green→red ramp)
   poller.rs            independent provider workers + throttle/backoff policy
   watch.rs             routes Claude/Codex JSONL changes to matching workers
-  token.rs             OAuth access-token cache + refresh-token rotation
-  keychain.rs          read/write the Claude OAuth credentials in the Keychain
+  token.rs             access-token cache (read-only; Claude Code owns refresh)
+  keepalive.rs         run Claude Code once so it renews the credential
+  keychain.rs          read the Claude OAuth credentials from the Keychain
   provider/
     mod.rs             Provider trait + UsageWindow / UsageSnapshot / FetchError
     claude.rs          ClaudeProvider: keychain → HTTP GET → parse

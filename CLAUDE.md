@@ -15,8 +15,9 @@ src/
   gauge.rs             draws the session % pie as a colored NSImage (green→red ramp)
   poller.rs            independent provider workers + throttle/backoff policy
   watch.rs             routes Claude/Codex JSONL changes to matching workers
-  token.rs             OAuth access-token cache + refresh-token rotation
-  keychain.rs          read/write the Claude OAuth credentials in the Keychain
+  token.rs             access-token cache (read-only; Claude Code owns refresh)
+  keepalive.rs         run Claude Code once so it renews the credential
+  keychain.rs          read the Claude OAuth credentials from the Keychain
   provider/
     mod.rs             Provider trait + normalized UsageWindow / UsageSnapshot / FetchError
     claude.rs          ClaudeProvider: keychain -> HTTP GET -> parse
@@ -71,7 +72,8 @@ Claude usage is fetched the same way Claude Code's `/usage` does:
 
 - **Token**: macOS Keychain generic-password, service `Claude Code-credentials`,
   account = login short name. JSON blob → `claudeAiOauth.{accessToken,
-  refreshToken, expiresAt}`.
+  expiresAt}`. Read-only, and read by shelling out to `/usr/bin/security` —
+  see "Keychain access" below for why both matter.
 - **Endpoint**: `GET https://api.anthropic.com/api/oauth/usage`
   - headers: `Authorization: Bearer <token>`, `anthropic-beta: oauth-2025-04-20`
   - response: `five_hour` (session) and `seven_day` (weekly), each
@@ -88,15 +90,57 @@ window. The provider reads only a bounded tail of recent logs and never reads
 OpenAI credentials. An expired local window is treated as 0% until Codex writes
 a newer server snapshot.
 
-### Token auto-refresh (`token.rs`)
+### Keychain access (`keychain.rs`, `token.rs`, `keepalive.rs`)
 
-When the Keychain access token is within 60s of `expiresAt` (or a usage call
-returns 401), `TokenManager` refreshes it:
-`POST https://platform.claude.com/v1/oauth/token` with
-`{ grant_type: "refresh_token", refresh_token, client_id }` (Claude Code's
-client_id). The rotated `access_token` / `refresh_token` are **written back to
-the Keychain** (preserving all other fields) so Claude Code stays in sync, and
-cached in memory. Only if the refresh itself fails does the bar show `auth?`.
+**We never write the Keychain item, and we read it through `/usr/bin/security`
+rather than the Security framework.** Both rules exist for the same reason: the
+item's *partition list*, the gate macOS checks above the ACL and the one that
+"Always Allow" cannot edit.
+
+- **Writing** rewrites the partition list to the writing process's code
+  identity. A write-back here evicted Claude Code's `teamid:Q6L2SF6YDW`
+  partition, so Claude Code prompted for Keychain access on every run and could
+  no longer persist its own refreshed tokens — which left *us* reading a token
+  frozen at whenever its last successful write happened.
+- **Reading in-process** would need a `cdhash:` partition entry, invalidated by
+  every rebuild of this binary. The Apple-signed `security` tool sits in the
+  stable `apple-tool:` partition instead.
+
+So Claude Code owns the refresh cycle outright. `TokenManager` caches the token
+until 60s before `expiresAt`, then re-reads; a 401 on a token we believed valid
+triggers one re-read and retry, in case Claude Code rotated it underneath us.
+
+The stored token lives about eight hours and Claude Code renews it lazily, on
+its next API call. Idle overnight, nobody renews it and we have nothing fresh
+to read — so `reload()` runs Claude Code itself (`keepalive.rs`: one
+`--model haiku -p` turn in a temp directory, at most once every 30 minutes) and
+reads the item again. Running Claude Code is safe in a way refreshing here is
+not: it is indistinguishable from the user opening a second terminal, and the
+rotating refresh_token stays under its owner's control.
+
+Two things defeat that renewal, and both look identical from here:
+
+- **`CLAUDE_CODE_OAUTH_TOKEN` in the environment.** Claude Code then reports
+  `authMethod: oauth_token` and never touches the Keychain, so the stored
+  credential goes stale and stays stale. `claude auth status` shows which path
+  is in use; the keepalive clears the variable for its own child process, but
+  it cannot help the user's own sessions.
+- **A dead OAuth grant**, which only `/login` fixes.
+
+If the keepalive runs and the token is still expired we report
+`TokenError::Stale` → `FetchError::AuthExpired`: the dropdown says **Signed
+out — run /login in Claude Code**, and the worker backs off to `AUTH_RETRY`
+rather than polling with a token that cannot work. If prompts come back
+instead, the partition list is the thing to check:
+
+```sh
+# what may touch the item without prompting
+security find-generic-password -s 'Claude Code-credentials' -a "$USER"
+# repair: Claude Code (teamid) + /usr/bin/security (apple-tool)
+security set-generic-password-partition-list \
+    -s 'Claude Code-credentials' -a "$USER" \
+    -S 'teamid:Q6L2SF6YDW,apple-tool:' ~/Library/Keychains/login.keychain-db
+```
 
 ## Build & run
 
@@ -106,8 +150,9 @@ cargo test           # parse unit test
 cargo build --release
 ```
 
-Requires Rust ≥ 1.85 (deps use edition 2024). First run may trigger a one-time
-**Keychain access prompt** — choose "Always Allow" to silence future reads.
+Requires Rust ≥ 1.85 (deps use edition 2024). Keychain reads go through
+`/usr/bin/security`, which is already trusted for this item, so a rebuild never
+re-triggers a Keychain prompt.
 
 ### Install / launch at login
 

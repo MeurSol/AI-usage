@@ -1,4 +1,5 @@
 mod gauge;
+mod keepalive;
 mod keychain;
 mod menubar;
 mod poller;

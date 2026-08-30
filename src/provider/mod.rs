@@ -30,7 +30,9 @@ pub struct UsageSnapshot {
 /// Why a fetch failed, kept distinct so the UI can prompt re-auth specifically.
 #[derive(Debug)]
 pub enum FetchError {
-    /// Token missing or rejected (401) — user must re-login in Claude Code.
+    /// Token missing, stale, or rejected (401). Claude Code owns the refresh
+    /// cycle and we already ran it (see `keepalive`) without getting a live
+    /// token back, so the OAuth grant is gone and only signing in clears this.
     AuthExpired,
     /// Provider explicitly rejected the request for polling too quickly.
     RateLimited,
@@ -41,7 +43,7 @@ pub enum FetchError {
 impl fmt::Display for FetchError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            FetchError::AuthExpired => write!(f, "auth expired — re-login in Claude Code"),
+            FetchError::AuthExpired => write!(f, "credential expired — sign in to Claude Code"),
             FetchError::RateLimited => write!(f, "rate-limited (429)"),
             FetchError::Other(e) => write!(f, "{e}"),
         }

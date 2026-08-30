@@ -8,7 +8,7 @@ use chrono::{DateTime, Local};
 use serde::Deserialize;
 
 use super::{FetchError, Provider, UsageSnapshot, UsageWindow};
-use crate::token::TokenManager;
+use crate::token::{TokenError, TokenManager};
 
 const USAGE_URL: &str = "https://api.anthropic.com/api/oauth/usage";
 const OAUTH_BETA: &str = "oauth-2025-04-20";
@@ -81,6 +81,15 @@ fn system_proxy_url() -> Option<String> {
     None
 }
 
+/// A stale token must read as "auth", not as a generic network failure: only
+/// `AuthExpired` tells the user what to do and slows the retry loop down.
+fn auth_error(e: TokenError) -> FetchError {
+    match e {
+        TokenError::Stale => FetchError::AuthExpired,
+        TokenError::Other(e) => FetchError::Other(e),
+    }
+}
+
 pub struct ClaudeProvider {
     agent: ureq::Agent,
     tokens: TokenManager,
@@ -99,7 +108,7 @@ impl ClaudeProvider {
             .build();
         let agent = ureq::Agent::new_with_config(config);
         ClaudeProvider {
-            tokens: TokenManager::new(agent.clone()),
+            tokens: TokenManager::new(),
             agent,
         }
     }
@@ -154,16 +163,13 @@ impl Provider for ClaudeProvider {
     }
 
     fn fetch(&self) -> Result<UsageSnapshot, FetchError> {
-        let token = self.tokens.access_token().map_err(FetchError::Other)?;
+        let token = self.tokens.access_token().map_err(auth_error)?;
         match self.get_usage(&token) {
             Ok(snapshot) => Ok(snapshot),
-            // Token rejected: refresh once and retry. A failure now means the
-            // refresh_token itself is bad — the user must re-login.
+            // Token rejected: Claude Code may have rotated it since we
+            // cached it, so re-read the Keychain and retry once.
             Err(GetError::Unauthorized) => {
-                let token = self
-                    .tokens
-                    .refresh_now()
-                    .map_err(|_| FetchError::AuthExpired)?;
+                let token = self.tokens.reload().map_err(auth_error)?;
                 match self.get_usage(&token) {
                     Ok(snapshot) => Ok(snapshot),
                     Err(GetError::Unauthorized) => Err(FetchError::AuthExpired),
@@ -222,3 +228,4 @@ mod tests {
         assert!(snap.windows[1].resets_at.is_some());
     }
 }
+
