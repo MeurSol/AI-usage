@@ -52,8 +52,11 @@ next event or timer:
 
 - **Targeted turn event** — Claude JSONL writes wake only Claude; Codex JSONL
   writes wake only GPT. Claude uses a 1.2s trailing debounce, GPT 250ms.
-- **Per-provider request floor** — Claude requests remain at least 15s apart;
+- **Per-provider request floor** — Claude requests remain at least 60s apart;
   local GPT reads remain at least 500ms apart. Bursts coalesce behind the floor.
+  The floor is sized for agent sessions, which turn over every few seconds for
+  hours: anything shorter becomes a sustained request stream the usage endpoint
+  answers with 429. Human-paced turns are minutes apart and never feel it.
 - **Manual refresh** — **Refresh now** broadcasts to both workers but cannot
   bypass Claude's minimum gap or an active 429 cooldown.
 - **Reset boundary** — each worker wakes ~3s after its own soonest `resets_at`.

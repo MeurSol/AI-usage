@@ -97,6 +97,12 @@ EOF
 
 echo "==> (Re)loading LaunchAgent"
 launchctl bootout "gui/$uid/$BUNDLE_ID" 2>/dev/null || true
+# bootout is asynchronous: bootstrapping before the old job is gone fails with
+# "Input/output error". Wait for the label to actually disappear.
+for _ in $(seq 1 50); do
+    launchctl print "gui/$uid/$BUNDLE_ID" >/dev/null 2>&1 || break
+    sleep 0.1
+done
 launchctl bootstrap "gui/$uid" "$PLIST"
 launchctl kickstart -k "gui/$uid/$BUNDLE_ID"
 

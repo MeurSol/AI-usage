@@ -38,7 +38,7 @@ dropdown:   GPT
   `~/.claude/projects` and `~/.codex/sessions`), on manual refresh, and at each
   limit reset boundary.
 - **Provider-aware rate protection** — GPT local events never call Claude's
-  endpoint. Claude requests are coalesced, kept at least 15s apart, and back off
+  endpoint. Claude requests are coalesced, kept at least 60s apart, and back off
   exponentially for 429 responses while GPT continues updating independently.
 - **Never writes your credential** — the Keychain item is read-only here, via
   `/usr/bin/security`. When the stored token has aged out, AI-usage runs Claude

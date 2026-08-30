@@ -37,7 +37,11 @@ fn policy_for(name: &str) -> Policy {
             // Claude writes several records per turn and its usage endpoint is
             // rate-limited. A trailing debounce waits for the completed turn.
             turn_debounce: Duration::from_millis(1_200),
-            min_fetch_gap: Duration::from_secs(15),
+            // An agent session turns over every few seconds for hours on end,
+            // which a short floor turns into a sustained request stream that
+            // the endpoint answers with 429. Human-paced turns are minutes
+            // apart, so a minute-wide floor costs them nothing.
+            min_fetch_gap: Duration::from_secs(60),
             // Normally the reset or a turn wakes us. This is only a safety net
             // for missed filesystem events or a null reset timestamp.
             idle_recheck: Duration::from_secs(6 * 60 * 60),
@@ -406,7 +410,7 @@ mod tests {
 
     #[test]
     fn provider_policies_keep_network_and_local_refreshes_independent() {
-        assert_eq!(policy_for("Claude").min_fetch_gap, Duration::from_secs(15));
+        assert_eq!(policy_for("Claude").min_fetch_gap, Duration::from_secs(60));
         assert_eq!(policy_for("GPT").min_fetch_gap, Duration::from_millis(500));
     }
 
